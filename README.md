@@ -165,6 +165,13 @@ go test ./...
 
 The e2e checks tenant isolation, admin passthrough, logs and exec through the proxy, audit identity, and cert rotation from an in-cluster CA without restarts.
 
+## Community
+
+- [Contributing](CONTRIBUTING.md): dev setup, Conventional Commits, PR checklist
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md): report vulnerabilities privately
+- [Maintainers](MAINTAINERS.md)
+
 ## License
 
-Copyright © 2026 Reflex. Orbitgate is free and open source software under the [MIT License](LICENSE).
+Copyright © 2026 REFLEX GLOBAL B.V. Orbitgate is free and open source software under the [MIT License](LICENSE).

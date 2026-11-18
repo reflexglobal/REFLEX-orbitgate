@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Reflex
+// SPDX-License-Identifier: MIT
+
 // Orbitgate: a pass-through kube-apiserver proxy that only lists the namespaces
 // a user has access to. Authentication, RBAC, admission and audit stay with the
 // apiserver: user credentials are forwarded untouched.

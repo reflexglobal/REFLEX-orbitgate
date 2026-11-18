@@ -28,14 +28,17 @@ import (
 )
 
 var (
-	listen    = flag.String("listen", ":8443", "listen address")
-	tlsCert   = flag.String("tls-cert", "", "TLS cert file (reloaded on change)")
-	tlsKey    = flag.String("tls-key", "", "TLS key file")
-	plainHTTP = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
-	apiserver = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
-	saDir     = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
-	printVer  = flag.Bool("version", false, "print the version and exit")
-	accessLog = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
+	listen      = flag.String("listen", ":8443", "listen address")
+	tlsCert     = flag.String("tls-cert", "", "TLS cert file (reloaded on change)")
+	tlsKey      = flag.String("tls-key", "", "TLS key file")
+	plainHTTP   = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
+	apiserver   = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
+	saDir       = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
+	printVer    = flag.Bool("version", false, "print the version and exit")
+	tenantVerb  = flag.String("tenant-verb", "list", "tenant check: verb a user needs in a namespace to see it in the list")
+	tenantRes   = flag.String("tenant-resource", "pods", "tenant check: resource for -tenant-verb")
+	tenantGroup = flag.String("tenant-group", "", "tenant check: API group of -tenant-resource (empty = core)")
+	accessLog   = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
 )
 
 var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
@@ -340,13 +343,16 @@ func allowedNamespaces(ctx context.Context, user http.Header, nss []string) map[
 	return allowed
 }
 
-// ponytail: "can list pods" = tenant of that namespace. view/edit/admin all grant it,
-// unlike "get namespace" for custom roles. Make it a flag if a tenant role ever lacks pods.
+// Tenant of a namespace = allowed -tenant-verb on -tenant-resource there (default "list pods":
+// view/edit/admin all grant it, unlike "get namespace" for custom roles).
+// ponytail: one check; OR over several checks if a single resource ever doesn't fit all tenants.
 func canSeeNamespace(ctx context.Context, user http.Header, ns string) (bool, error) {
 	b, _ := json.Marshal(map[string]any{
 		"apiVersion": "authorization.k8s.io/v1",
 		"kind":       "SelfSubjectAccessReview",
-		"spec":       map[string]any{"resourceAttributes": map[string]string{"verb": "list", "resource": "pods", "namespace": ns}},
+		"spec": map[string]any{"resourceAttributes": map[string]string{
+			"verb": *tenantVerb, "resource": *tenantRes, "group": *tenantGroup, "namespace": ns,
+		}},
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.JoinPath("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews").String(), bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")

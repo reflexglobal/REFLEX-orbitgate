@@ -52,7 +52,7 @@ For `GET /api/v1/namespaces` (a list, not a watch):
 
 Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward, and namespace watches) is proxied unchanged, and RBAC decides.
 
-"Tenant of a namespace" means "can list pods there", which `view`, `edit` and `admin` all grant. A custom role without pods won't show up in `get ns`, though it still works with `-n <ns>`.
+"Tenant of a namespace" means "can list pods there" by default, which `view`, `edit` and `admin` all grant. A custom role without pods won't show up in `get ns`, though it still works with `-n <ns>`. To use another check, set `-tenant-verb`, `-tenant-resource` and `-tenant-group` (chart: `extraArgs: [-tenant-resource=configmaps]`, or `[-tenant-group=example.com, -tenant-resource=widgets]` for a CRD).
 
 ## Audit logging
 

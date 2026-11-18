@@ -21,8 +21,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -76,16 +78,42 @@ func main() {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// No ReadTimeout/WriteTimeout: they would cut watches, logs -f, exec and port-forward.
+	srv := &http.Server{Addr: *listen, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	if !*plainHTTP {
+		certs := &certReloader{}
+		if _, err := certs.get(nil); err != nil {
+			log.Fatal(err)
+		}
+		srv.TLSConfig = &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}
+	}
+
+	// SIGTERM (rollout, drain): stop accepting, let in-flight requests finish. Streams still open at the
+	// deadline (watch, exec, logs -f) are cut; clients reconnect. Stays below the default 30s grace period.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		log.Print("shutting down")
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}()
+
 	log.Printf("orbitgate listening on %s -> %s", *listen, apiURL)
 	if *plainHTTP {
-		log.Fatal(http.ListenAndServe(*listen, h))
+		err = srv.ListenAndServe()
+	} else {
+		err = srv.ListenAndServeTLS("", "")
 	}
-	certs := &certReloader{}
-	if _, err := certs.get(nil); err != nil {
+	if err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-	srv := &http.Server{Addr: *listen, Handler: h, TLSConfig: &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}}
-	log.Fatal(srv.ListenAndServeTLS("", ""))
+	<-done
 }
 
 // certReloader re-reads the cert when the file changes, so cert-manager/secret

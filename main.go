@@ -85,7 +85,7 @@ func main() {
 	}
 
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" && r.URL.Query().Get("watch") == "" {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" {
 			listNamespaces(w, r)
 			return
 		}
@@ -253,12 +253,20 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 		relay(w, resp)
 		return
 	}
+	if isWatch(r.URL.Query()) {
+		watchNamespaces(w, r, resp)
+		return
+	}
 
 	var body map[string]any
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()
 	if err := dec.Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if k, _ := entries(body); k == "" { // not a list: fail closed rather than pass it through unfiltered
+		http.Error(w, "unexpected namespace list response", http.StatusBadGateway)
 		return
 	}
 	filter(body, allowedNamespaces(r.Context(), r.Header, names(body)))
@@ -272,7 +280,63 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	io.Copy(flushWriter{w}, resp.Body) // flush per chunk: passthrough watches must stream
+}
+
+type flushWriter struct{ w http.ResponseWriter }
+
+func (f flushWriter) Write(b []byte) (int, error) {
+	n, err := f.w.Write(b)
+	http.NewResponseController(f.w).Flush()
+	return n, err
+}
+
+// isWatch parses ?watch= like the apiserver: only "0" and "false" are false, even an empty value is true.
+func isWatch(q url.Values) bool {
+	v, ok := q["watch"]
+	return ok && len(v) > 0 && v[0] != "0" && !strings.EqualFold(v[0], "false")
+}
+
+// watchNamespaces streams the proxy SA's namespace watch, forwarding only events the user may see.
+// Each event is checked when it arrives (SSARs cached, see ssarTTL), so RBAC changes apply mid-watch.
+func watchNamespaces(w http.ResponseWriter, r *http.Request, resp *http.Response) {
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	rc := http.NewResponseController(w)
+	rc.Flush()
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	enc := json.NewEncoder(w)
+	for {
+		var ev map[string]any
+		if dec.Decode(&ev) != nil {
+			return
+		}
+		if visibleEvent(r.Context(), r.Header, ev) {
+			if enc.Encode(ev) != nil || rc.Flush() != nil {
+				return
+			}
+		}
+	}
+}
+
+// visibleEvent fails closed: only events for allowed namespaces, nameless BOOKMARKs and Status errors pass.
+func visibleEvent(ctx context.Context, user http.Header, ev map[string]any) bool {
+	obj, _ := ev["object"].(map[string]any)
+	if obj == nil {
+		return false
+	}
+	if obj["kind"] == "Status" {
+		return true
+	}
+	if obj["kind"] == "Table" { // kubectl get ns -w
+		filter(obj, allowedNamespaces(ctx, user, names(obj)))
+		_, l := entries(obj)
+		return len(l) > 0
+	}
+	if n := nameOf(obj); n != "" {
+		return allowedNamespaces(ctx, user, []string{n})[n]
+	}
+	return ev["type"] == "BOOKMARK"
 }
 
 // entries returns the list key and its entries: "items" for NamespaceList, "rows" for Table (kubectl get).

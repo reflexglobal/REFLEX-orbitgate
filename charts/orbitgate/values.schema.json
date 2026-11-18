@@ -56,6 +56,39 @@
         }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressFrom": {
+          "type": "array"
+        },
+        "metricsFrom": {
+          "type": "array"
+        },
+        "apiserver": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cidrs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ports": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
     "tls": {
       "type": "object",
       "additionalProperties": false,

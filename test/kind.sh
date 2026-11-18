@@ -25,7 +25,8 @@ openssl x509 -req -in "$tmp/tls.csr" -CA "$tmp/ca.crt" -CAkey "$tmp/ca.key" -CAc
 
 kubectl create ns orbitgate --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 helm upgrade --install orbitgate charts/orbitgate -n orbitgate \
-  --set image.repository=orbitgate --set image.tag=dev --set tls.certManager.enabled=false >/dev/null  # first: drops a cert-manager Certificate left by a previous run
+  --set image.repository=orbitgate --set image.tag=dev --set tls.certManager.enabled=false \
+  --set networkPolicy.enabled=true >/dev/null  # first: drops a cert-manager Certificate left by a previous run
 kubectl -n orbitgate create secret tls orbitgate-tls --cert="$tmp/tls.crt" --key="$tmp/tls.key" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n orbitgate rollout restart deploy/orbitgate >/dev/null  # pick up the rebuilt :dev image

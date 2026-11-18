@@ -1,6 +1,6 @@
 # Maintainers
 
-Orbitgate is maintained by [REFLEX GLOBAL B.V.](https://github.com/reflexglobal) as part of Airlock.
+Orbitgate is maintained by [REFLEX GLOBAL B.V.](https://github.com/reflexglobal).
 
 | Name | GitHub | Role |
 |---|---|---|

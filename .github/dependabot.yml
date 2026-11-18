@@ -1,10 +1,20 @@
 version: 2
 updates:
+  # Go toolchain in the Dockerfile: daily, Go patch releases are security fixes.
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: daily}
+    commit-message: {prefix: build}
+  # GitHub Actions: minor/patch grouped into one PR and auto-merged after CI; majors reviewed by hand.
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: weekly}
     commit-message: {prefix: ci}
-  - package-ecosystem: docker
+    groups:
+      actions:
+        update-types: [minor, patch]
+  # Go modules (none today; covers any future dependency).
+  - package-ecosystem: gomod
     directory: /
     schedule: {interval: weekly}
     commit-message: {prefix: build}

@@ -4,6 +4,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly: catch new Go/stdlib vulnerabilities even without commits
 permissions:
   contents: read
 
@@ -29,8 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
-        with: {go-version-file: go.mod, cache: false}  # no deps, nothing to cache
+        with: {go-version: 1.26.x, check-latest: true, cache: false}  # latest patch; no deps to cache
       - run: go vet ./... && go test ./...
+      - name: govulncheck (Go stdlib + modules)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - uses: azure/setup-helm@v5
       - run: helm lint charts/orbitgate
 
@@ -43,10 +47,53 @@ jobs:
       - uses: azure/setup-helm@v5
       - run: ./test/kind.sh
 
+  # CVE + misconfiguration scanning; fails on fixable HIGH/CRITICAL. Also runs weekly (schedule).
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t orbitgate:scan .
+      - name: Trivy image (CVEs in the binary and any OS packages)
+        # SHA-pinned: trivy-action tags were hijacked in March 2026 (CVE-2026-33634); v0.35.0 is the clean, immutable release.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: orbitgate:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Trivy config (Dockerfile + Helm chart with default values)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        env:
+          TRIVY_HELM_KUBE_VERSION: "1.34.0"  # chart needs >=1.25; Trivy's renderer defaults to 1.20
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  # Dependabot minor/patch updates merge themselves once every check above passed; majors wait for review.
+  automerge:
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    needs: [commits, test, e2e, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --squash --delete-branch "$PR"
+
   # Tag vX.Y.Z -> image ghcr.io/reflexglobal/orbitgate:X.Y.Z + chart oci://ghcr.io/reflexglobal/charts/orbitgate X.Y.Z
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [commits, test, e2e]
+    needs: [commits, test, e2e, scan]
     runs-on: ubuntu-latest
     permissions:
       contents: write

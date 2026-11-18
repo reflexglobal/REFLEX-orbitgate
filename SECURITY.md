@@ -24,6 +24,12 @@ Especially interesting:
 
 Out of scope: misconfigured RBAC in your cluster, and issues in the kube-apiserver itself (report those to [Kubernetes](https://kubernetes.io/docs/reference/issues-security/security/)).
 
+## Scanning and patching
+
+- CI runs `govulncheck` and Trivy (image CVEs and Dockerfile/Helm misconfigurations) on every change and weekly. Fixable HIGH/CRITICAL findings fail the build and block releases.
+- The image is `FROM scratch` (only the static binary), so there is no OS layer to patch. The Go toolchain is pinned to an exact patch version, which Dependabot bumps daily.
+- Known, intentional finding: `hostNetwork: true` (DaemonSet mode, opt-in) triggers KSV-0009 "access to host network".
+
 ## Verifying releases
 
 Images and charts are signed with cosign (keyless, GitHub Actions OIDC):

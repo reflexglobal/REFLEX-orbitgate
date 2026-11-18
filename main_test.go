@@ -97,6 +97,28 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	}
 }
 
+func TestCAReload(t *testing.T) {
+	api := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer api.Close()
+	*saDir = t.TempDir()
+	ca := *saDir + "/ca.crt"
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "wrong CA"}, NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	apiCA = &caReloader{}
+	c := &http.Client{Transport: newTransport()}
+	if _, err := c.Get(api.URL); err == nil {
+		t.Fatal("untrusted apiserver accepted")
+	}
+	os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: api.Certificate().Raw}), 0o600)
+	later := time.Now().Add(time.Second)
+	os.Chtimes(ca, later, later)
+	if _, err := c.Get(api.URL); err != nil {
+		t.Fatalf("rotated CA not picked up: %v", err)
+	}
+}
+
 func writeCert(t *testing.T, dir, cn string, mod time.Time) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: cn}, NotAfter: time.Now().Add(time.Hour)}

@@ -1,93 +1,118 @@
 # Orbitgate
 
-Part of **Airlock**, Reflex's toolkit for airgapped Kubernetes deployments.
+Part of **Airlock**, Reflex's toolkit for airgapped Kubernetes deployments and defense clusters.
 
-Orbitgate is a small kube-apiserver proxy for tenant separation:
+Orbitgate is a small pass-through proxy in front of the kube-apiserver. It does one thing: **`kubectl get ns` only shows the namespaces you have access to.** Cluster admins see everything, and dev teams don't see each other's namespaces.
 
-- Authenticates `kubectl` users with OIDC (Dex, Keycloak, Okta, Entra ID, or any other standards-compliant issuer).
-- Forwards every request to the real apiserver **as that user** (impersonation), so normal RBAC applies.
-- `kubectl get ns` only returns namespaces the user is a tenant of: namespaces where they can `list pods`. A cluster admin sees everything.
+Everything else is the apiserver's job, unchanged:
 
-It runs next to the real apiserver as a Deployment exposed with a NodePort or LoadBalancer. The apiserver itself is unchanged, and admins can keep using it directly.
+- Authentication, RBAC, admission and audit all run on the apiserver. Orbitgate forwards the user's credentials untouched.
+- Orbitgate never sees a decision it could get wrong, and it holds no rights beyond `list namespaces`.
+- It runs next to the real apiserver (NodePort or LoadBalancer). The apiserver itself is unchanged, and admins can keep using it directly.
 
 ```
-kubectl --(OIDC id_token)--> orbitgate --(SA token + Impersonate-User/Group)--> kube-apiserver
+kubectl --(user's own token)--> orbitgate --(same token, untouched)--> kube-apiserver
 ```
 
-Only the namespace list is filtered. Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward) goes to the apiserver unchanged, as the user, and RBAC decides. A tenant is anyone who can `list pods` in a namespace (`view`, `edit` and `admin` all grant that). A custom role without pods won't show up in `get ns`, though it still works when the namespace is given explicitly (`-n`).
+## How the namespace list works
+
+For `GET /api/v1/namespaces` (a list, not a watch):
+
+1. Orbitgate forwards it as the user. If the apiserver allows it (e.g. cluster-admin), the real answer passes through unchanged.
+2. If the apiserver says **403**, Orbitgate lists namespaces with its own ServiceAccount. It then asks the apiserver *as the user* (a `SelfSubjectAccessReview`) whether the user can `list pods` in each namespace.
+3. Only namespaces where the answer is yes are returned. If a check errors, that namespace is hidden (fail closed). `remainingItemCount` is removed so the total count doesn't leak.
+
+Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward, and namespace watches) is proxied unchanged, and RBAC decides.
+
+"Tenant of a namespace" means "can list pods there", which `view`, `edit` and `admin` all grant. A custom role without pods won't show up in `get ns`, though it still works with `-n <ns>`.
+
+## Audit logging
+
+Because credentials are passed through, audit events look exactly like direct apiserver use:
+
+| what | audit event |
+|---|---|
+| any request via Orbitgate | `user.username` = the real user, no `impersonatedUser`; `sourceIPs` = [client IP, Orbitgate pod IP] |
+| `get ns` by a cluster-admin | one normal `list namespaces` by that user |
+| `get ns` by a tenant | a `list namespaces` by the user (403), a `list namespaces` by `system:serviceaccount:<ns>:orbitgate`, and one `create selfsubjectaccessreviews` by the user per namespace |
+
+The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any client-sent value is replaced).
 
 ## Requirements
 
-**Cluster:** any Kubernetes with RBAC; no apiserver flags or restarts. Also needed:
+**Cluster:** any Kubernetes with RBAC. Also needed:
 - the image in a registry the cluster can pull from;
-- a TLS cert in secret `orbitgate-tls` whose CA users trust;
-- a NodePort or LoadBalancer;
-- admin rights once, to apply `deploy/orbitgate.yaml`.
+- a TLS cert for Orbitgate (see [docs/TLS.md](docs/TLS.md));
+- a NodePort or LoadBalancer.
 
-**OIDC provider** (Keycloak, Dex, Okta, Entra, ...):
-- reachable from the cluster, so Orbitgate can fetch its signing keys, and from users' machines, so they can log in;
-- a client whose ID token has a username claim (`email` by default) and optionally a `groups` claim.
+**Authentication:** users must authenticate with **bearer tokens** the apiserver accepts:
+- OIDC via the apiserver's `--oidc-*` flags or `AuthenticationConfiguration`, with [kubelogin](https://github.com/int128/kubelogin) on the client side;
+- ServiceAccount tokens;
+- webhook token auth.
 
-**Tenants:** a namespace plus a RoleBinding for `oidc:<user>` or `oidc:<group>`.
+Orbitgate itself knows nothing about OIDC, so any provider the apiserver supports works (Keycloak, Dex, Okta, Entra, ...). **Client-certificate users can't go through a TLS-terminating proxy**; they keep using the apiserver directly, which is usually only break-glass admins.
 
-**Users:** `kubectl` + [kubelogin](https://github.com/int128/kubelogin) and a kubeconfig pointing at Orbitgate (see below).
+**Tenants:** a namespace plus a RoleBinding granting `view`, `edit` or `admin` (or any role with `list pods`).
 
-**Build:** Go 1.26 or Docker.
+**Build:** Go 1.26 or Docker. **Test env:** Docker, kind, kubectl, helm, openssl, python3, and internet access to pull images.
 
-**Test env:** Docker, kind, kubectl, openssl, curl, python3, and internet access to pull the kind, Dex and base images.
+## Install
 
-## Deploy
+```sh
+helm install orbitgate oci://ghcr.io/reflexglobal/charts/orbitgate --version <X.Y.Z> \
+  -n orbitgate --create-namespace \
+  --set image.repository=<your-registry>/reflex/orbitgate \
+  --set tls.certManager.enabled=true --set tls.certManager.caSecretName=<your-ca-secret> \
+  --set 'tls.certManager.dnsNames={orbitgate.example.internal}'
+```
 
-1. Mirror the image into your airgapped registry: `docker build -t <registry>/reflex/orbitgate:<tag> .`
-2. Create the TLS secret: `kubectl -n orbitgate create secret tls orbitgate-tls --cert=tls.crt --key=tls.key`
-3. Edit `image`, `-issuer` and `-client-id` in `deploy/orbitgate.yaml`, then `kubectl apply -f deploy/orbitgate.yaml`.
-4. Give tenants a RoleBinding in their namespace. Users and groups are prefixed with `oidc:`:
+Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.Z` (or take the `.tgz` from the GitHub release), and mirror `ghcr.io/reflexglobal/orbitgate:X.Y.Z` into the enclave registry.
 
-   ```sh
-   kubectl -n team-a create rolebinding team-a --clusterrole=edit --group=oidc:team-a
-   ```
-
-The OIDC issuer must be reachable from inside the cluster. In an airgapped enclave that means an in-enclave Keycloak or Dex.
-
-## Flags
-
-| flag | default | |
+| value | default | |
 |---|---|---|
-| `-issuer` | | OIDC issuer URL (required) |
-| `-client-id` | | expected token audience (required) |
-| `-username-claim` | `email` | e.g. `preferred_username` for Entra/Keycloak |
-| `-groups-claim` | `groups` | |
-| `-prefix` | `oidc:` | prepended to usernames and groups |
-| `-tls-cert` / `-tls-key` | | required unless `-plain-http` |
-| `-plain-http` | false | only behind a TLS-terminating LB |
-| `-apiserver` | `https://kubernetes.default.svc` | |
+| `image.repository` / `image.tag` | `ghcr.io/reflexglobal/orbitgate` / appVersion | |
+| `replicas` | 2 | |
+| `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer` |
+| `tls.secretName` | `orbitgate-tls` | bring your own, or let cert-manager create it |
+| `tls.certManager.enabled` | false | see [docs/TLS.md](docs/TLS.md) |
+| `tls.certManager.caSecretName` | | existing CA secret in the release namespace; the chart makes an Issuer |
+| `tls.certManager.issuerRef` | ClusterIssuer `airlock-ca` | existing (Cluster)Issuer, used when `caSecretName` is empty |
+| `tls.certManager.dnsNames` / `ipAddresses` | | every name/IP users connect to |
+| `extraArgs` | `[]` | e.g. `-plain-http` behind a TLS-terminating LB |
 
-## kubeconfig for users
+## User kubeconfig
 
-Use [kubelogin](https://github.com/int128/kubelogin) to fetch the token:
+Same user entry as for the apiserver; only the cluster's `server` and CA change:
 
 ```yaml
+clusters:
+  - name: airlock
+    cluster:
+      server: https://orbitgate.example.internal:30443
+      certificate-authority-data: <base64 of the CA that signed Orbitgate's cert>
 users:
-  - name: orbitgate
+  - name: oidc
     user:
       exec:
         apiVersion: client.authentication.k8s.io/v1beta1
         command: kubectl
-        args: [oidc-login, get-token, --oidc-issuer-url=<issuer>, --oidc-client-id=orbitgate]
-clusters:
-  - name: orbitgate
-    cluster: {server: "https://<node-or-lb>:30443", certificate-authority: orbitgate-ca.crt}
+        args: [oidc-login, get-token, --oidc-issuer-url=<issuer>, --oidc-client-id=<client>]
 ```
 
-## Security notes
+## Releases and versioning
 
-- The Orbitgate ServiceAccount can impersonate any user or group. Orbitgate strips every caller-supplied `Authorization` and `Impersonate-*` header, and it refuses identities that start with `system:`, so a token claiming `system:masters` is rejected.
-- The namespace list is fetched with the proxy's own SA, and each namespace is then checked with a SubjectAccessReview on behalf of the user. If a check errors, that namespace is hidden (fail closed). `remainingItemCount` is removed so the total namespace count doesn't leak.
-- Only plain list calls to `/api/v1/namespaces` are filtered. A watch on namespaces goes through as the user, so a dev gets Forbidden.
+Push a tag `vX.Y.Z` and CI tests, then publishes:
+- the image `ghcr.io/reflexglobal/orbitgate:X.Y.Z` (amd64 + arm64);
+- the chart `oci://ghcr.io/reflexglobal/charts/orbitgate` version `X.Y.Z` (chart version = app version);
+- a GitHub release with the chart `.tgz`.
+
+ArtifactHub needs a public repo and public packages. Once that's the case, fill in `charts/orbitgate/artifacthub-repo.yml`, add the repo on artifacthub.io and uncomment the oras step in `.github/workflows/ci.yml`.
 
 ## Develop
 
 ```sh
 go test ./...
-./test/kind.sh   # own kind cluster "orbitgate" + Dex + e2e; uses test/.kubeconfig, not ~/.kube/config
+./test/kind.sh   # own kind cluster "orbitgate" with audit logging; uses test/.kubeconfig, never ~/.kube/config
 ```
+
+The e2e checks tenant isolation, admin passthrough, logs and exec through the proxy, audit identity, and cert rotation from an in-cluster CA without restarts.

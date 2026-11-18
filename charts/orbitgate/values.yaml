@@ -1,0 +1,40 @@
+image:
+  repository: ghcr.io/reflexglobal/orbitgate  # point at your airgapped registry mirror
+  tag: ""                                     # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicas: 2
+
+service:
+  type: NodePort  # or LoadBalancer / ClusterIP
+  port: 443
+  nodePort: 30443 # NodePort only; empty = random
+  annotations: {}
+
+tls:
+  # Secret with tls.crt/tls.key. Orbitgate reloads it on change, no restart needed.
+  # Bring your own (kubectl create secret tls ...) or let cert-manager create it below.
+  secretName: orbitgate-tls
+  certManager:
+    enabled: false
+    # Use a CA that already exists in the cluster, either:
+    # a) an existing CA secret (tls.crt + tls.key of a CA) in the release namespace; the chart creates an Issuer for it
+    caSecretName: ""
+    # b) an existing Issuer/ClusterIssuer (CA, Vault, step-ca, ...); used when caSecretName is empty
+    issuerRef:
+      kind: ClusterIssuer
+      name: airlock-ca
+    duration: 2160h    # 90 days
+    renewBefore: 720h  # renew 30 days before expiry
+    # Every name/IP users put in their kubeconfig "server:" must be listed.
+    dnsNames: []
+    ipAddresses: []
+
+extraArgs: []
+
+resources:
+  requests: {cpu: 10m, memory: 32Mi}
+  limits: {memory: 128Mi}
+nodeSelector: {}
+tolerations: []

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ .Release.Name }}}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: orbitgate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - -tls-cert=/tls/tls.crt
+            - -tls-key=/tls/tls.key
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - {name: https, containerPort: 8443}
+          readinessProbe:
+            tcpSocket: {port: https}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tls, mountPath: /tls, readOnly: true}  # directory mount (not subPath) so rotation propagates
+      volumes:
+        - name: tls
+          secret: {secretName: {{ .Values.tls.secretName }}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}

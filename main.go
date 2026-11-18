@@ -1,5 +1,6 @@
-// orbitgate: OIDC-authenticating kube-apiserver proxy that impersonates the
-// caller and only lists the namespaces the caller has RBAC access to.
+// Orbitgate: a pass-through kube-apiserver proxy that only lists the namespaces
+// a user has access to. Authentication, RBAC, admission and audit stay with the
+// apiserver: user credentials are forwarded untouched.
 package main
 
 import (
@@ -8,7 +9,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,40 +19,25 @@ import (
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/coreos/go-oidc/v3/oidc"
+	"time"
 )
 
 var (
-	listen      = flag.String("listen", ":8443", "listen address")
-	tlsCert     = flag.String("tls-cert", "", "TLS cert file")
-	tlsKey      = flag.String("tls-key", "", "TLS key file")
-	plainHTTP   = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
-	apiserver   = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
-	saDir       = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
-	issuer      = flag.String("issuer", "", "OIDC issuer URL")
-	clientID    = flag.String("client-id", "", "OIDC client ID (token audience)")
-	userClaim   = flag.String("username-claim", "email", "claim used as Kubernetes username")
-	groupsClaim = flag.String("groups-claim", "groups", "claim used as Kubernetes groups")
-	prefix      = flag.String("prefix", "oidc:", "prefix for usernames and groups (keep it, see README)")
+	listen    = flag.String("listen", ":8443", "listen address")
+	tlsCert   = flag.String("tls-cert", "", "TLS cert file (reloaded on change)")
+	tlsKey    = flag.String("tls-key", "", "TLS key file")
+	plainHTTP = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
+	apiserver = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
+	saDir     = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
 )
 
 var (
-	apiURL   *url.URL
-	client   *http.Client
-	verifier *oidc.IDTokenVerifier
+	apiURL *url.URL
+	client *http.Client
 )
-
-type identity struct {
-	user   string
-	groups []string
-}
 
 func main() {
 	flag.Parse()
-	if *issuer == "" || *clientID == "" {
-		log.Fatal("-issuer and -client-id are required")
-	}
 	if !*plainHTTP && (*tlsCert == "" || *tlsKey == "") {
 		log.Fatal("-tls-cert/-tls-key required (or -plain-http behind a TLS-terminating LB)")
 	}
@@ -71,32 +56,19 @@ func main() {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{RootCAs: pool}}
 	client = &http.Client{Transport: transport}
 
-	provider, err := oidc.NewProvider(context.Background(), *issuer)
-	if err != nil {
-		log.Fatal(err)
-	}
-	verifier = provider.Verifier(&oidc.Config{ClientID: *clientID})
-
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(apiURL)
-			pr.Out.Header.Set("Authorization", "Bearer "+saToken())
+			pr.SetXForwarded() // apiserver audit logs the real client IP in sourceIPs
 		},
 	}
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := authenticate(r)
-		if err != nil {
-			log.Printf("auth failed from %s: %v", r.RemoteAddr, err)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" && r.URL.Query().Get("watch") == "" {
-			listNamespaces(w, r, id)
+			listNamespaces(w, r)
 			return
 		}
-		impersonate(r.Header, id)
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -104,7 +76,44 @@ func main() {
 	if *plainHTTP {
 		log.Fatal(http.ListenAndServe(*listen, h))
 	}
-	log.Fatal(http.ListenAndServeTLS(*listen, *tlsCert, *tlsKey, h))
+	certs := &certReloader{}
+	if _, err := certs.get(nil); err != nil {
+		log.Fatal(err)
+	}
+	srv := &http.Server{Addr: *listen, Handler: h, TLSConfig: &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}}
+	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+// certReloader re-reads the cert when the file changes, so cert-manager/secret
+// rotation is picked up without a restart. Mount the secret as a directory, not
+// subPath: subPath mounts never update.
+// ponytail: one stat per TLS handshake; fine at kubectl rates.
+type certReloader struct {
+	mu   sync.Mutex
+	mod  time.Time
+	cert *tls.Certificate
+}
+
+func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, err := os.Stat(*tlsCert)
+	if err == nil && c.cert != nil && st.ModTime().Equal(c.mod) {
+		return c.cert, nil
+	}
+	if err == nil {
+		var cert tls.Certificate
+		if cert, err = tls.LoadX509KeyPair(*tlsCert, *tlsKey); err == nil {
+			c.cert, c.mod = &cert, st.ModTime()
+			log.Printf("loaded TLS cert %q, expires %s", cert.Leaf.Subject.CommonName, cert.Leaf.NotAfter.Format(time.RFC3339))
+			return c.cert, nil
+		}
+	}
+	if c.cert != nil { // mid-rotation or transient: keep serving the last good cert
+		log.Printf("TLS reload failed, keeping current cert: %v", err)
+		return c.cert, nil
+	}
+	return nil, err
 }
 
 // saToken re-reads the projected token every call; kubelet rotates it.
@@ -116,77 +125,47 @@ func saToken() string {
 	return strings.TrimSpace(string(b))
 }
 
-func authenticate(r *http.Request) (identity, error) {
-	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		return identity{}, errors.New("no bearer token")
-	}
-	tok, err := verifier.Verify(r.Context(), raw)
-	if err != nil {
-		return identity{}, err
-	}
-	var claims map[string]any
-	if err := tok.Claims(&claims); err != nil {
-		return identity{}, err
-	}
-	return identityFromClaims(claims)
-}
-
-func identityFromClaims(claims map[string]any) (identity, error) {
-	user, _ := claims[*userClaim].(string)
-	if user == "" {
-		return identity{}, fmt.Errorf("claim %q missing", *userClaim)
-	}
-	id := identity{user: *prefix + user}
-	if gs, ok := claims[*groupsClaim].([]any); ok {
-		for _, g := range gs {
-			if s, ok := g.(string); ok && s != "" {
-				id.groups = append(id.groups, *prefix+s)
-			}
+// userAuth copies the caller's credentials (and any Impersonate-* the apiserver will judge) onto req.
+func userAuth(req *http.Request, from http.Header) {
+	for k, v := range from {
+		if k == "Authorization" || strings.HasPrefix(k, "Impersonate-") {
+			req.Header[k] = v
 		}
-	}
-	// Never let a token claim impersonate system:masters & co, even with -prefix="".
-	for _, n := range append([]string{id.user}, id.groups...) {
-		if strings.HasPrefix(n, "system:") {
-			return identity{}, fmt.Errorf("refusing reserved name %q", n)
-		}
-	}
-	return id, nil
-}
-
-// impersonate drops caller credentials and any caller-supplied Impersonate-*
-// headers (the proxy SA may impersonate anyone), then sets the verified identity.
-func impersonate(h http.Header, id identity) {
-	h.Del("Authorization")
-	for k := range h {
-		if strings.HasPrefix(strings.ToLower(k), "impersonate-") {
-			delete(h, k)
-		}
-	}
-	h.Set("Impersonate-User", id.user)
-	for _, g := range id.groups {
-		h.Add("Impersonate-Group", g)
 	}
 }
 
-// listNamespaces lists as the proxy SA, then keeps only namespaces the caller can list pods in.
-func listNamespaces(w http.ResponseWriter, r *http.Request, id identity) {
-	accept := r.Header.Get("Accept")
-	if accept == "" || strings.Contains(accept, "protobuf") {
-		accept = "application/json" // we have to decode it to filter
-	}
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, apiURL.JoinPath(r.URL.Path).String()+"?"+r.URL.RawQuery, nil)
-	req.Header.Set("Accept", accept)
-	req.Header.Set("Authorization", "Bearer "+saToken())
+// listNamespaces first asks the apiserver as the user. Allowed (e.g. cluster-admin):
+// the real answer passes through untouched. Forbidden: list with the proxy SA and keep
+// only namespaces where the user can list pods (asked as the user, via SelfSubjectAccessReview).
+func listNamespaces(w http.ResponseWriter, r *http.Request) {
+	target := apiURL.JoinPath(r.URL.Path).String() + "?" + r.URL.RawQuery
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	req.Header = r.Header.Clone()
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	if resp.StatusCode != http.StatusForbidden {
+		relay(w, resp)
+		return
+	}
+	resp.Body.Close()
+
+	accept := r.Header.Get("Accept")
+	if accept == "" || strings.Contains(accept, "protobuf") {
+		accept = "application/json" // we have to decode it to filter
+	}
+	req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	req.Header.Set("Accept", accept)
+	req.Header.Set("Authorization", "Bearer "+saToken())
+	if resp, err = client.Do(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		relay(w, resp)
 		return
 	}
 
@@ -197,10 +176,18 @@ func listNamespaces(w http.ResponseWriter, r *http.Request, id identity) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	filter(body, allowedNamespaces(r.Context(), id, names(body)))
-
+	filter(body, allowedNamespaces(r.Context(), r.Header, names(body)))
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	json.NewEncoder(w).Encode(body)
+}
+
+func relay(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 // entries returns the list key and its entries: "items" for NamespaceList, "rows" for Table (kubectl get).
@@ -252,8 +239,8 @@ func filter(body map[string]any, allowed map[string]bool) {
 	}
 }
 
-// ponytail: one SubjectAccessReview per namespace, 16 in flight. Cache per (user, ns) if clusters get big.
-func allowedNamespaces(ctx context.Context, id identity, nss []string) map[string]bool {
+// ponytail: one SelfSubjectAccessReview per namespace, 16 in flight. Cache per (token, ns) if clusters get big.
+func allowedNamespaces(ctx context.Context, user http.Header, nss []string) map[string]bool {
 	allowed := map[string]bool{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -263,9 +250,9 @@ func allowedNamespaces(ctx context.Context, id identity, nss []string) map[strin
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			ok, err := canSeeNamespace(ctx, id, ns)
+			ok, err := canSeeNamespace(ctx, user, ns)
 			if err != nil {
-				log.Printf("SAR %s/%s: %v", id.user, ns, err) // fail closed
+				log.Printf("SSAR %s: %v", ns, err) // fail closed
 			}
 			mu.Lock()
 			allowed[ns] = ok
@@ -277,21 +264,16 @@ func allowedNamespaces(ctx context.Context, id identity, nss []string) map[strin
 }
 
 // ponytail: "can list pods" = tenant of that namespace. view/edit/admin all grant it,
-// unlike "get namespace". Make it a flag if a tenant role ever lacks pods.
-func canSeeNamespace(ctx context.Context, id identity, ns string) (bool, error) {
-	sar := map[string]any{
+// unlike "get namespace" for custom roles. Make it a flag if a tenant role ever lacks pods.
+func canSeeNamespace(ctx context.Context, user http.Header, ns string) (bool, error) {
+	b, _ := json.Marshal(map[string]any{
 		"apiVersion": "authorization.k8s.io/v1",
-		"kind":       "SubjectAccessReview",
-		"spec": map[string]any{
-			"user":   id.user,
-			"groups": append([]string{"system:authenticated"}, id.groups...),
-			"resourceAttributes": map[string]string{"verb": "list", "resource": "pods", "namespace": ns},
-		},
-	}
-	b, _ := json.Marshal(sar)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.JoinPath("/apis/authorization.k8s.io/v1/subjectaccessreviews").String(), bytes.NewReader(b))
+		"kind":       "SelfSubjectAccessReview",
+		"spec":       map[string]any{"resourceAttributes": map[string]string{"verb": "list", "resource": "pods", "namespace": ns}},
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.JoinPath("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews").String(), bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+saToken())
+	userAuth(req, user)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err

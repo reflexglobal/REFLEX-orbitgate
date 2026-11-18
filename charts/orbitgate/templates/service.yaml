@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  {{- with .Values.service.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ .Release.Name }}}
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: https
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}

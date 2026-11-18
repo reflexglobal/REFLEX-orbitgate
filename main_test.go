@@ -1,9 +1,22 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"io"
+	"math/big"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestFilterListAndTable(t *testing.T) {
@@ -27,18 +40,85 @@ func TestFilterListAndTable(t *testing.T) {
 	}
 }
 
-func TestIdentityRejectsSystem(t *testing.T) {
-	*prefix = ""
-	defer func() { *prefix = "oidc:" }()
-	if _, err := identityFromClaims(map[string]any{"email": "a@x", "groups": []any{"system:masters"}}); err == nil {
-		t.Fatal("system:masters accepted")
+// Fake apiserver: "sa" and "admin" may list namespaces, "alice" is forbidden but may list pods in dev-a.
+func TestListNamespacesPassthroughAndFallback(t *testing.T) {
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		switch {
+		case r.URL.Path == "/api/v1/namespaces" && (tok == "sa" || tok == "admin"):
+			io.WriteString(w, `{"kind":"NamespaceList","metadata":{},"items":[{"metadata":{"name":"dev-a"}},{"metadata":{"name":"dev-b"}}]}`)
+		case r.URL.Path == "/api/v1/namespaces" && tok == "alice":
+			w.WriteHeader(http.StatusForbidden)
+		case strings.HasSuffix(r.URL.Path, "selfsubjectaccessreviews") && tok == "alice":
+			b, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"status":{"allowed":`+map[bool]string{true: "true", false: "false"}[strings.Contains(string(b), `"dev-a"`)]+`}}`)
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer api.Close()
+	apiURL, _ = url.Parse(api.URL)
+	client = api.Client()
+	*saDir = t.TempDir()
+	os.WriteFile(*saDir+"/token", []byte("sa"), 0o600)
+
+	list := func(tok string) (int, []string) {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		listNamespaces(w, r)
+		var body map[string]any
+		json.Unmarshal(w.Body.Bytes(), &body)
+		return w.Code, names(body)
+	}
+	if code, ns := list("admin"); code != 200 || len(ns) != 2 {
+		t.Fatalf("admin: %d %v", code, ns)
+	}
+	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ns[0] != "dev-a" {
+		t.Fatalf("alice: %d %v", code, ns)
+	}
+	if code, _ := list("garbage"); code != 401 {
+		t.Fatalf("garbage: %d", code)
 	}
 }
 
-func TestImpersonateStripsCallerHeaders(t *testing.T) {
-	h := http.Header{"Authorization": {"Bearer x"}, "Impersonate-User": {"admin"}, "Impersonate-Extra-Foo": {"y"}}
-	impersonate(h, identity{user: "oidc:a@x", groups: []string{"oidc:dev"}})
-	if h.Get("Authorization") != "" || h.Get("Impersonate-Extra-Foo") != "" || h.Get("Impersonate-User") != "oidc:a@x" || h.Get("Impersonate-Group") != "oidc:dev" {
-		t.Fatalf("bad headers: %v", h)
+func writeCert(t *testing.T, dir, cn string, mod time.Time) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: cn}, NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, _ := x509.MarshalECPrivateKey(key)
+	os.WriteFile(dir+"/tls.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600)
+	os.WriteFile(dir+"/tls.crt", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	os.Chtimes(dir+"/tls.crt", mod, mod)
+}
+
+func TestCertReload(t *testing.T) {
+	dir := t.TempDir()
+	*tlsCert, *tlsKey = dir+"/tls.crt", dir+"/tls.key"
+	c := &certReloader{}
+	cn := func() string {
+		cert, err := c.get(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert.Leaf.Subject.CommonName
+	}
+	now := time.Now()
+	writeCert(t, dir, "old", now)
+	if cn() != "old" {
+		t.Fatal("initial load")
+	}
+	writeCert(t, dir, "new", now.Add(time.Second))
+	if cn() != "new" {
+		t.Fatal("rotation not picked up")
+	}
+	os.WriteFile(dir+"/tls.key", []byte("garbage"), 0o600)
+	os.Chtimes(dir+"/tls.crt", now.Add(2*time.Second), now.Add(2*time.Second))
+	if cn() != "new" {
+		t.Fatal("broken rotation should keep last good cert")
 	}
 }

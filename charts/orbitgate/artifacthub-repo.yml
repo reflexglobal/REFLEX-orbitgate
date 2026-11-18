@@ -1,0 +1,3 @@
+# Pushed next to the OCI chart (tag "artifacthub.io") by the release workflow once the repo is public.
+repositoryID: ""  # fill in after adding the repo on artifacthub.io
+owners: []

@@ -1,0 +1,17 @@
+# kind cluster with apiserver audit logging, to check what Orbitgate traffic looks like in audit.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            audit-log-path: /var/log/kubernetes/audit.log
+            audit-policy-file: /etc/kubernetes/policies/audit-policy.yaml
+          extraVolumes:
+            - {name: audit-policies, hostPath: /etc/kubernetes/policies, mountPath: /etc/kubernetes/policies, readOnly: true, pathType: DirectoryOrCreate}
+            - {name: audit-logs, hostPath: /var/log/kubernetes, mountPath: /var/log/kubernetes, readOnly: false, pathType: DirectoryOrCreate}
+    extraMounts:
+      - {hostPath: ./test/audit-policy.yaml, containerPath: /etc/kubernetes/policies/audit-policy.yaml, readOnly: true}

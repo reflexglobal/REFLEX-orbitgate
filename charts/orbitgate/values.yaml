@@ -62,3 +62,15 @@ resources:
 nodeSelector: {}
 affinity: {}
 tolerations: []
+# Deployment only: spread replicas, e.g. over zones/nodes (add a labelSelector for app.kubernetes.io/instance).
+topologySpreadConstraints: []
+
+# Deployment with replicas > 1 only, so a node drain never takes every replica down.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# e.g. system-cluster-critical for the DaemonSet on control planes.
+priorityClassName: ""
+podAnnotations: {}
+podLabels: {}

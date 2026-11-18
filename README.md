@@ -14,7 +14,7 @@ Orbitgate is a small pass-through proxy in front of the kube-apiserver. It does 
 Everything else is the apiserver's job, unchanged:
 
 - Authentication, RBAC, admission and audit all run on the apiserver. Orbitgate forwards the user's credentials untouched.
-- Orbitgate never sees a decision it could get wrong, and it holds no rights beyond `list namespaces`.
+- Orbitgate never sees a decision it could get wrong, and it holds no rights beyond `list` and `watch` on namespaces.
 - It runs next to the real apiserver: as normal pods (NodePort or LoadBalancer), or as a DaemonSet on the control-plane nodes, optionally listening directly on their IPs. The apiserver itself is unchanged, and admins can keep using it directly.
 
 ```
@@ -37,20 +37,24 @@ kubectl --(user's own token)--> orbitgate --(same token, untouched)--> kube-apis
 | **Tenant separation** | Teams only see their own namespaces; cluster admins see everything. |
 | **Nothing to migrate** | Works with your existing RoleBindings. No CRDs, no tenant objects, no apiserver flags or restarts. |
 | **Apiserver stays the authority** | Credentials pass through untouched, so authn, RBAC, admission and audit behave exactly as on direct access. Audit logs show the real user. |
-| **Tiny attack surface** | One static binary, no dependencies beyond the Go standard library, a `FROM scratch` image of ~9 MB, only `list namespaces` RBAC, no impersonation rights. Fails closed. |
+| **Tiny attack surface** | One static binary, no dependencies beyond the Go standard library, a `FROM scratch` image of ~9 MB, only `list`/`watch namespaces` RBAC, no impersonation rights. Fails closed. |
 | **Airgap-friendly** | No external calls; mirror one image and one chart. TLS from your own CA, with hot reload so renewals never need a restart. |
 | **Fits your topology** | Normal pods behind a NodePort/LoadBalancer, or a DaemonSet on the control planes right next to the apiserver. Admins can always bypass it. |
 | **Any identity provider** | Whatever the apiserver accepts (OIDC via Keycloak, Dex, Okta, Entra; ServiceAccount tokens; webhook auth). |
 
 ## How the namespace list works
 
-For `GET /api/v1/namespaces` (a list, not a watch):
+For `GET /api/v1/namespaces` (list or watch):
 
 1. Orbitgate forwards it as the user. If the apiserver allows it (e.g. cluster-admin), the real answer passes through unchanged.
 2. If the apiserver says **403**, Orbitgate lists namespaces with its own ServiceAccount. It then asks the apiserver *as the user* (a `SelfSubjectAccessReview`) whether the user can `list pods` in each namespace.
 3. Only namespaces where the answer is yes are returned. If a check errors, that namespace is hidden (fail closed). `remainingItemCount` is removed so the total count doesn't leak.
 
-Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward, and namespace watches) is proxied unchanged, and RBAC decides.
+Access-review answers are cached for 30 seconds per credential and namespace, and at most 32 run at once across all users, so repeated `get ns` calls don't multiply apiserver load. A new or removed RoleBinding can therefore take up to 30 seconds to show in `get ns` (RBAC on the namespace itself applies immediately).
+
+Watches (`kubectl get ns -w`, k9s, Lens) work the same way: a tenant's watch runs as the ServiceAccount, and each event is passed on only if the user may see that namespace. A tenant may not see the `DELETED` event of a namespace once its RoleBindings are gone.
+
+Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward) is proxied unchanged, and RBAC decides.
 
 "Tenant of a namespace" means "can list pods there" by default, which `view`, `edit` and `admin` all grant. A custom role without pods won't show up in `get ns`, though it still works with `-n <ns>`. To use another check, set `-tenant-verb`, `-tenant-resource` and `-tenant-group` (chart: `extraArgs: [-tenant-resource=configmaps]`, or `[-tenant-group=example.com, -tenant-resource=widgets]` for a CRD).
 
@@ -62,11 +66,20 @@ Because credentials are passed through, audit events look exactly like direct ap
 |---|---|
 | any request via Orbitgate | `user.username` = the real user, no `impersonatedUser`; `sourceIPs` = [client IP, Orbitgate pod IP] |
 | `get ns` by a cluster-admin | one normal `list namespaces` by that user |
-| `get ns` by a tenant | a `list namespaces` by the user (403), a `list namespaces` by `system:serviceaccount:<ns>:orbitgate`, and one `create selfsubjectaccessreviews` by the user per namespace |
+| `get ns` by a tenant | a `list namespaces` by the user (403), a `list namespaces` by `system:serviceaccount:<ns>:orbitgate`, and one `create selfsubjectaccessreviews` by the user per namespace (results cached 30s per credential) |
 
 The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any client-sent value is replaced).
 
 Orbitgate itself logs no requests by default; the audit log is the record. To debug network paths, `-access-log` (chart: `extraArgs: [-access-log]`) logs client IP, method, path, status and duration per request. It never logs credentials or query strings.
+
+## Metrics and health
+
+With `-metrics-listen=:9090` (the chart sets it from `metricsPort`), Orbitgate serves plain HTTP, unauthenticated, on a separate port:
+
+- `/healthz`: the process is up; `/readyz`: the apiserver answers its `/readyz`.
+- `/metrics` (Prometheus text format): `orbitgate_requests_total{code}`, `orbitgate_namespace_requests_total{mode="passthrough|filtered"}`, `orbitgate_ssar_total`, `orbitgate_ssar_errors_total` (a failing check hides a namespace), `orbitgate_ssar_cache_hits_total`, and `orbitgate_tls_cert_expiry_timestamp_seconds` to alert on before the serving cert expires.
+
+No namespace names, users or tokens appear in the metrics.
 
 ## Requirements
 
@@ -105,6 +118,7 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | `replicas` | 2 | Deployment only |
 | `hostNetwork` | false | DaemonSet only: listen directly on each control-plane node IP at `listenPort` |
 | `listenPort` | 8443 | container port, or node port with `hostNetwork` (must be free on the nodes) |
+| `metricsPort` | 9090 | plain-HTTP `/metrics`, `/healthz`, `/readyz` (probes use it); also a node port with `hostNetwork` |
 | `daemonSet.affinity` / `.tolerations` | control-plane nodes (kubeadm, RKE2, k3s) | DaemonSet scheduling |
 | `nodeSelector` / `affinity` / `tolerations` | | Deployment scheduling (`nodeSelector` applies to both) |
 | `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer`; `ClusterIP` is enough with `hostNetwork` |

@@ -146,6 +146,11 @@
       "minimum": 1,
       "maximum": 65535
     },
+    "metricsPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
     "daemonSet": {
       "type": "object",
       "additionalProperties": false,

@@ -72,6 +72,8 @@ The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any cli
 
 Orbitgate itself logs no requests by default; the audit log is the record. To debug network paths, `-access-log` (chart: `extraArgs: [-access-log]`) logs client IP, method, path, status and duration per request. It never logs credentials or query strings.
 
+Add `-access-log-json` for one JSON line per request that also names the caller: `user` and `groups` (from a `SelfSubjectReview` as the caller, cached 30s per credential, so it needs Kubernetes 1.28+), plus `verb`, `apiGroup`, `namespace`, `resource`, `subresource`, `name`, `code`, `allowed` and `durationMs`. The verb and resource come from parsing the URL, for debugging; the apiserver audit log stays the authoritative record.
+
 ## Metrics and health
 
 With `-metrics-listen=:9090` (the chart sets it from `metricsPort`), Orbitgate serves plain HTTP, unauthenticated, on a separate port:

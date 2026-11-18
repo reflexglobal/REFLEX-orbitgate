@@ -70,7 +70,7 @@ jobs:
           tags: ghcr.io/reflexglobal/orbitgate:${{ env.VERSION }}
       - uses: azure/setup-helm@v4
       - uses: sigstore/cosign-installer@v3
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@v2
       - name: Prepare chart for ArtifactHub
         run: |
           sed -i "s#ghcr.io/reflexglobal/orbitgate:[0-9A-Za-z.-]*#ghcr.io/reflexglobal/orbitgate:$VERSION#" charts/orbitgate/Chart.yaml

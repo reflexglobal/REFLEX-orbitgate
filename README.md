@@ -37,7 +37,7 @@ kubectl --(user's own token)--> orbitgate --(same token, untouched)--> kube-apis
 | **Tenant separation** | Teams only see their own namespaces; cluster admins see everything. |
 | **Nothing to migrate** | Works with your existing RoleBindings. No CRDs, no tenant objects, no apiserver flags or restarts. |
 | **Apiserver stays the authority** | Credentials pass through untouched, so authn, RBAC, admission and audit behave exactly as on direct access. Audit logs show the real user. |
-| **Tiny attack surface** | One static binary, no dependencies beyond the Go standard library, distroless image, only `list namespaces` RBAC, no impersonation rights. Fails closed. |
+| **Tiny attack surface** | One static binary, no dependencies beyond the Go standard library, a `FROM scratch` image of ~9 MB, only `list namespaces` RBAC, no impersonation rights. Fails closed. |
 | **Airgap-friendly** | No external calls; mirror one image and one chart. TLS from your own CA, with hot reload so renewals never need a restart. |
 | **Fits your topology** | Normal pods behind a NodePort/LoadBalancer, or a DaemonSet on the control planes right next to the apiserver. Admins can always bypass it. |
 | **Any identity provider** | Whatever the apiserver accepts (OIDC via Keycloak, Dex, Okta, Entra; ServiceAccount tokens; webhook auth). |

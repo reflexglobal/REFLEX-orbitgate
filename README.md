@@ -72,6 +72,15 @@ The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any cli
 
 Orbitgate itself logs no requests by default; the audit log is the record. To debug network paths, `-access-log` (chart: `extraArgs: [-access-log]`) logs client IP, method, path, status and duration per request. It never logs credentials or query strings.
 
+## Metrics and health
+
+With `-metrics-listen=:9090` (the chart sets it from `metricsPort`), Orbitgate serves plain HTTP, unauthenticated, on a separate port:
+
+- `/healthz`: the process is up; `/readyz`: the apiserver answers its `/readyz`.
+- `/metrics` (Prometheus text format): `orbitgate_requests_total{code}`, `orbitgate_namespace_requests_total{mode="passthrough|filtered"}`, `orbitgate_ssar_total`, `orbitgate_ssar_errors_total` (a failing check hides a namespace), `orbitgate_ssar_cache_hits_total`, and `orbitgate_tls_cert_expiry_timestamp_seconds` to alert on before the serving cert expires.
+
+No namespace names, users or tokens appear in the metrics.
+
 ## Requirements
 
 **Cluster:** any Kubernetes with RBAC. Also needed:
@@ -116,6 +125,7 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | `replicas` | 2 | Deployment only |
 | `hostNetwork` | false | DaemonSet only: listen directly on each control-plane node IP at `listenPort` |
 | `listenPort` | 8443 | container port, or node port with `hostNetwork` (must be free on the nodes) |
+| `metricsPort` | 9090 | plain-HTTP `/metrics`, `/healthz`, `/readyz` (probes use it); also a node port with `hostNetwork` |
 | `daemonSet.affinity` / `.tolerations` | control-plane nodes (kubeadm, RKE2, k3s) | DaemonSet scheduling |
 | `nodeSelector` / `affinity` / `tolerations` | | Deployment scheduling (`nodeSelector` applies to both) |
 | `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer`; `ClusterIP` is enough with `hostNetwork` |

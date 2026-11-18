@@ -50,6 +50,8 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2' 
 nss() { og "$1" get ns -o name | tr '\n' ' ' | sed 's/ $//'; }
 
 admin=$(token admin); alice=$(token alice); bob=$(token bob)
+pod=$(kubectl -n orbitgate get pods -o jsonpath='{.items[0].metadata.name}')
+check "metrics: cert expiry exported" "$(kubectl get --raw "/api/v1/namespaces/orbitgate/pods/$pod:9090/proxy/metrics" | grep -c '^orbitgate_tls_cert_expiry_timestamp_seconds ')" "1"
 check "alice sees only dev-a" "$(nss "$alice")" "namespace/dev-a"
 check "bob sees only dev-b" "$(nss "$bob")" "namespace/dev-b"
 check "admin sees all (passthrough)" "$(og "$admin" get ns -o name | grep -c .)" "$(kubectl get ns -o name | grep -c .)"

@@ -201,11 +201,43 @@ func TestAccessLogNoCredentials(t *testing.T) {
 	var buf strings.Builder
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	h := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	*accessLog = true
+	h := observe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/x/pods/p/exec?command=secret", nil)
 	r.Header.Set("Authorization", "Bearer s3cr3t")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	if l := buf.String(); !strings.Contains(l, "GET /api/v1/namespaces/x/pods/p/exec 403") || strings.Contains(l, "secret") || strings.Contains(l, "s3cr3t") {
 		t.Fatalf("access log: %q", l)
+	}
+}
+
+func TestMetricsAndReadyz(t *testing.T) {
+	ready := true
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ready {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer api.Close()
+	apiURL, _ = url.Parse(api.URL)
+	client = api.Client()
+	*saDir = t.TempDir()
+	get := func(path string) (int, string) {
+		w := httptest.NewRecorder()
+		metricsMux().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w.Code, w.Body.String()
+	}
+	if code, _ := get("/readyz"); code != 200 {
+		t.Fatalf("readyz: %d", code)
+	}
+	ready = false
+	if code, _ := get("/readyz"); code != 503 {
+		t.Fatalf("readyz with apiserver down: %d", code)
+	}
+	inc("orbitgate_ssar_errors_total")
+	observe(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	if _, m := get("/metrics"); !strings.Contains(m, "# TYPE orbitgate_ssar_errors_total counter\norbitgate_ssar_errors_total ") ||
+		!strings.Contains(m, `orbitgate_requests_total{code="404"} `) {
+		t.Fatalf("metrics:\n%s", m)
 	}
 }

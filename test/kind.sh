@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Reflex
+# Copyright (c) 2026 REFLEX GLOBAL B.V.
 # SPDX-License-Identifier: MIT
 # Own kind cluster "orbitgate" (audit logging on) + Orbitgate via the Helm chart, then e2e through the proxy.
 # Users are ServiceAccount tokens: Orbitgate passes any credential the apiserver accepts (OIDC works the same).

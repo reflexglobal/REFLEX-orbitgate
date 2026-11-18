@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Reflex
+// Copyright (c) 2026 REFLEX GLOBAL B.V.
 // SPDX-License-Identifier: MIT
 
 package main

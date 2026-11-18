@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Reflex
+# Copyright (c) 2026 REFLEX GLOBAL B.V.
 # SPDX-License-Identifier: MIT
 # Conventional commits since the previous tag -> ArtifactHub "artifacthub.io/changes" YAML on stdout.
 # feat=added, fix=fixed, fix(security)=security, perf/refactor=changed, "!"=breaking; docs/chore/ci/test/build/style skipped.

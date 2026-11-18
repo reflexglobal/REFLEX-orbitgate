@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Reflex
+// Copyright (c) 2026 REFLEX GLOBAL B.V.
 // SPDX-License-Identifier: MIT
 
 // Orbitgate: a pass-through kube-apiserver proxy that only lists the namespaces

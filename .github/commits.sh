@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Reflex
+# Copyright (c) 2026 REFLEX GLOBAL B.V.
 # SPDX-License-Identifier: MIT
 # Fail if any commit in range $1 doesn't follow Conventional Commits (https://www.conventionalcommits.org).
 set -euo pipefail

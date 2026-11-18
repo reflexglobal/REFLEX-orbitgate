@@ -10,7 +10,7 @@ home: https://github.com/reflexglobal/REFLEX-orbitgate
 sources: [https://github.com/reflexglobal/REFLEX-orbitgate]
 keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap, airlock]
 maintainers:
-  - name: Reflex
+  - name: REFLEX GLOBAL B.V.
     url: https://github.com/reflexglobal
 annotations:
   artifacthub.io/category: security

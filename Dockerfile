@@ -1,9 +1,9 @@
 # Exact Go patch version: Dependabot bumps it (Go patch releases carry the security fixes).
 FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
-ARG TARGETOS TARGETARCH
+ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod *.go ./
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /orbitgate .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /orbitgate .
 
 # Nothing but the static binary: no shell, no libc, no CA bundle (the apiserver CA
 # comes from the ServiceAccount mount), so no base-image CVEs to patch.

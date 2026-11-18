@@ -34,7 +34,10 @@ var (
 	plainHTTP = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
 	apiserver = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
 	saDir     = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
+	printVer  = flag.Bool("version", false, "print the version and exit")
 )
+
+var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
 
 var (
 	apiURL *url.URL
@@ -43,6 +46,11 @@ var (
 
 func main() {
 	flag.Parse()
+	if *printVer {
+		fmt.Println(version)
+		return
+	}
+	log.Printf("orbitgate %s", version)
 	if !*plainHTTP && (*tlsCert == "" || *tlsKey == "") {
 		log.Fatal("-tls-cert/-tls-key required (or -plain-http behind a TLS-terminating LB)")
 	}

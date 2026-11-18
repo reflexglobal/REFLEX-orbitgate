@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -184,11 +185,19 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(body)
 }
 
+// relay copies resp to w minus hop-by-hop headers (RFC 9110 7.6.1), like httputil.ReverseProxy does.
 func relay(w http.ResponseWriter, resp *http.Response) {
 	defer resp.Body.Close()
-	for k, v := range resp.Header {
-		w.Header()[k] = v
+	h := resp.Header.Clone()
+	for _, v := range h.Values("Connection") {
+		for f := range strings.SplitSeq(v, ",") {
+			h.Del(strings.TrimSpace(f))
+		}
 	}
+	for _, k := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade"} {
+		h.Del(k)
+	}
+	maps.Copy(w.Header(), h)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }

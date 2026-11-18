@@ -43,6 +43,17 @@ func TestFilterListAndTable(t *testing.T) {
 	}
 }
 
+func TestRelayDropsHopByHop(t *testing.T) {
+	resp := &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader("x")), Header: http.Header{
+		"Connection": {"X-Foo"}, "X-Foo": {"1"}, "Keep-Alive": {"timeout=5"}, "Content-Type": {"application/json"},
+	}}
+	w := httptest.NewRecorder()
+	relay(w, resp)
+	if h := w.Header(); h.Get("Connection")+h.Get("X-Foo")+h.Get("Keep-Alive") != "" || h.Get("Content-Type") == "" || w.Code != 403 {
+		t.Fatalf("got %d %v", w.Code, h)
+	}
+}
+
 // Fake apiserver: "sa" and "admin" may list namespaces, "alice" is forbidden but may list pods in dev-a.
 func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

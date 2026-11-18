@@ -49,14 +49,10 @@ func main() {
 	if apiURL, err = url.Parse(*apiserver); err != nil {
 		log.Fatal(err)
 	}
-	ca, err := os.ReadFile(*saDir + "/ca.crt")
-	if err != nil {
+	if _, err := apiCA.get(); err != nil {
 		log.Fatal(err)
 	}
-	pool := x509.NewCertPool()
-	pool.AppendCertsFromPEM(ca)
-	// ponytail: HTTP/1.1 only, so exec/attach/port-forward upgrades pass through ReverseProxy.
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{RootCAs: pool}}
+	transport := newTransport()
 	client = &http.Client{Transport: transport}
 
 	proxy := &httputil.ReverseProxy{
@@ -117,6 +113,74 @@ func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		return c.cert, nil
 	}
 	return nil, err
+}
+
+// newTransport is http.DefaultTransport (dial/TLS/idle timeouts, proxy env) with the apiserver CA.
+// ponytail: HTTP/1.1 only, so exec/attach/port-forward upgrades pass through ReverseProxy.
+func newTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ForceAttemptHTTP2 = false
+	t.MaxIdleConnsPerHost = 100 // default 2: most requests would open a new TLS conn under load
+	// Standard chain verification against the current CA (VerifyConnection runs for every
+	// handshake); InsecureSkipVerify only turns off the static RootCAs check it replaces.
+	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, VerifyConnection: apiCA.verify}
+	return t
+}
+
+var apiCA = &caReloader{}
+
+// caReloader re-reads the apiserver CA (ca.crt) when it changes, so a cluster CA
+// rotation needs no restart. Same idea as certReloader: one stat per handshake.
+type caReloader struct {
+	mu   sync.Mutex
+	mod  time.Time
+	pool *x509.CertPool
+}
+
+func (c *caReloader) get() (*x509.CertPool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f := *saDir + "/ca.crt"
+	st, err := os.Stat(f)
+	if err == nil && c.pool != nil && st.ModTime().Equal(c.mod) {
+		return c.pool, nil
+	}
+	var b []byte
+	if err == nil {
+		b, err = os.ReadFile(f)
+	}
+	if err == nil {
+		pool := x509.NewCertPool()
+		if pool.AppendCertsFromPEM(b) {
+			if c.pool != nil {
+				log.Printf("reloaded apiserver CA %s", f)
+			}
+			c.pool, c.mod = pool, st.ModTime()
+			return c.pool, nil
+		}
+		err = fmt.Errorf("no certificates in %s", f)
+	}
+	if c.pool != nil { // mid-rotation or transient: keep the last good CA
+		log.Printf("CA reload failed, keeping current CA: %v", err)
+		return c.pool, nil
+	}
+	return nil, err
+}
+
+func (c *caReloader) verify(cs tls.ConnectionState) error {
+	pool, err := c.get()
+	if err != nil {
+		return err
+	}
+	if len(cs.PeerCertificates) == 0 {
+		return fmt.Errorf("apiserver sent no certificate")
+	}
+	opts := x509.VerifyOptions{Roots: pool, DNSName: cs.ServerName, Intermediates: x509.NewCertPool()}
+	for _, ic := range cs.PeerCertificates[1:] {
+		opts.Intermediates.AddCert(ic)
+	}
+	_, err = cs.PeerCertificates[0].Verify(opts)
+	return err
 }
 
 // saToken re-reads the projected token every call; kubelet rotates it.

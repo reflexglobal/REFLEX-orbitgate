@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,6 +42,7 @@ var (
 	tenantVerb  = flag.String("tenant-verb", "list", "tenant check: verb a user needs in a namespace to see it in the list")
 	tenantRes   = flag.String("tenant-resource", "pods", "tenant check: resource for -tenant-verb")
 	tenantGroup = flag.String("tenant-group", "", "tenant check: API group of -tenant-resource (empty = core)")
+	metricsAddr = flag.String("metrics-listen", "", "plain-HTTP listener for /metrics, /healthz, /readyz (e.g. :9090; empty = off)")
 	accessLog   = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
 )
 
@@ -85,14 +87,18 @@ func main() {
 	}
 
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" && r.URL.Query().Get("watch") == "" {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" {
 			listNamespaces(w, r)
 			return
 		}
 		proxy.ServeHTTP(w, r)
 	})
-	if *accessLog {
-		h = logRequests(h)
+	h = observe(h)
+	if *metricsAddr != "" {
+		go func() {
+			srv := &http.Server{Addr: *metricsAddr, Handler: metricsMux(), ReadHeaderTimeout: 10 * time.Second}
+			log.Fatal(srv.ListenAndServe())
+		}()
 	}
 
 	// No ReadTimeout/WriteTimeout: they would cut watches, logs -f, exec and port-forward.
@@ -133,13 +139,18 @@ func main() {
 	<-done
 }
 
-// logRequests logs one line per request. Only the path: query strings can carry secrets (exec commands).
-func logRequests(next http.Handler) http.Handler {
+// observe counts requests by status and, with -access-log, logs one line per request.
+// Only the path: query strings can carry secrets (exec commands).
+func observe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r)
 		if sw.code == 0 && r.Header.Get("Upgrade") != "" {
 			sw.code = http.StatusSwitchingProtocols // hijacked: exec, attach, port-forward
+		}
+		inc(fmt.Sprintf("orbitgate_requests_total{code=%q}", strconv.Itoa(sw.code)))
+		if !*accessLog {
+			return
 		}
 		log.Printf("%s %s %s %d %s", r.RemoteAddr, r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
 	})
@@ -188,6 +199,7 @@ func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		var cert tls.Certificate
 		if cert, err = tls.LoadX509KeyPair(*tlsCert, *tlsKey); err == nil {
 			c.cert, c.mod = &cert, st.ModTime()
+			set("orbitgate_tls_cert_expiry_timestamp_seconds", float64(cert.Leaf.NotAfter.Unix()))
 			log.Printf("loaded TLS cert %q, expires %s", cert.Leaf.Subject.CommonName, cert.Leaf.NotAfter.Format(time.RFC3339))
 			return c.cert, nil
 		}
@@ -232,9 +244,11 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if resp.StatusCode != http.StatusForbidden {
+		inc(`orbitgate_namespace_requests_total{mode="passthrough"}`)
 		relay(w, resp)
 		return
 	}
+	inc(`orbitgate_namespace_requests_total{mode="filtered"}`)
 	resp.Body.Close()
 
 	accept := r.Header.Get("Accept")
@@ -253,12 +267,20 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 		relay(w, resp)
 		return
 	}
+	if isWatch(r.URL.Query()) {
+		watchNamespaces(w, r, resp)
+		return
+	}
 
 	var body map[string]any
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()
 	if err := dec.Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if k, _ := entries(body); k == "" { // not a list: fail closed rather than pass it through unfiltered
+		http.Error(w, "unexpected namespace list response", http.StatusBadGateway)
 		return
 	}
 	filter(body, allowedNamespaces(r.Context(), r.Header, names(body)))
@@ -272,7 +294,63 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	io.Copy(flushWriter{w}, resp.Body) // flush per chunk: passthrough watches must stream
+}
+
+type flushWriter struct{ w http.ResponseWriter }
+
+func (f flushWriter) Write(b []byte) (int, error) {
+	n, err := f.w.Write(b)
+	http.NewResponseController(f.w).Flush()
+	return n, err
+}
+
+// isWatch parses ?watch= like the apiserver: only "0" and "false" are false, even an empty value is true.
+func isWatch(q url.Values) bool {
+	v, ok := q["watch"]
+	return ok && len(v) > 0 && v[0] != "0" && !strings.EqualFold(v[0], "false")
+}
+
+// watchNamespaces streams the proxy SA's namespace watch, forwarding only events the user may see.
+// Each event is checked when it arrives (SSARs cached, see ssarTTL), so RBAC changes apply mid-watch.
+func watchNamespaces(w http.ResponseWriter, r *http.Request, resp *http.Response) {
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	rc := http.NewResponseController(w)
+	rc.Flush()
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	enc := json.NewEncoder(w)
+	for {
+		var ev map[string]any
+		if dec.Decode(&ev) != nil {
+			return
+		}
+		if visibleEvent(r.Context(), r.Header, ev) {
+			if enc.Encode(ev) != nil || rc.Flush() != nil {
+				return
+			}
+		}
+	}
+}
+
+// visibleEvent fails closed: only events for allowed namespaces, nameless BOOKMARKs and Status errors pass.
+func visibleEvent(ctx context.Context, user http.Header, ev map[string]any) bool {
+	obj, _ := ev["object"].(map[string]any)
+	if obj == nil {
+		return false
+	}
+	if obj["kind"] == "Status" {
+		return true
+	}
+	if obj["kind"] == "Table" { // kubectl get ns -w
+		filter(obj, allowedNamespaces(ctx, user, names(obj)))
+		_, l := entries(obj)
+		return len(l) > 0
+	}
+	if n := nameOf(obj); n != "" {
+		return allowedNamespaces(ctx, user, []string{n})[n]
+	}
+	return ev["type"] == "BOOKMARK"
 }
 
 // entries returns the list key and its entries: "items" for NamespaceList, "rows" for Table (kubectl get).
@@ -388,6 +466,7 @@ func allowedNamespaces(ctx context.Context, user http.Header, nss []string) map[
 	for _, ns := range nss {
 		k := ssarKey{cred, ns}
 		if ok, hit := cachedSSAR(k); hit {
+			inc("orbitgate_ssar_cache_hits_total")
 			mu.Lock()
 			allowed[ns] = ok
 			mu.Unlock()
@@ -402,7 +481,9 @@ func allowedNamespaces(ctx context.Context, user http.Header, nss []string) map[
 		go func() {
 			defer func() { <-ssarSlots; wg.Done() }()
 			ok, err := canSeeNamespace(ctx, user, ns)
+			inc("orbitgate_ssar_total")
 			if err != nil {
+				inc("orbitgate_ssar_errors_total")
 				log.Printf("SSAR %s: %v", ns, err) // fail closed, not cached
 			} else {
 				storeSSAR(k, ok)
@@ -442,4 +523,61 @@ func canSeeNamespace(ctx context.Context, user http.Header, ns string) (bool, er
 	}
 	err = json.NewDecoder(resp.Body).Decode(&out)
 	return err == nil && out.Status.Allowed, err
+}
+
+// Metrics in the Prometheus text format, stdlib only. Keys are full series names.
+var metrics = struct {
+	sync.Mutex
+	m map[string]float64
+}{m: map[string]float64{}}
+
+func inc(series string) {
+	metrics.Lock()
+	metrics.m[series]++
+	metrics.Unlock()
+}
+
+func set(series string, v float64) {
+	metrics.Lock()
+	metrics.m[series] = v
+	metrics.Unlock()
+}
+
+func metricsMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
+	// Ready = the apiserver answers (the serving cert is loaded before the listener starts).
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, apiURL.JoinPath("/readyz").String(), nil)
+		req.Header.Set("Authorization", "Bearer "+saToken())
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				err = fmt.Errorf("apiserver /readyz: %s", resp.Status)
+			}
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		io.WriteString(w, "ok\n")
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		metrics.Lock()
+		defer metrics.Unlock()
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		prev := ""
+		for _, k := range slices.Sorted(maps.Keys(metrics.m)) {
+			if name, _, _ := strings.Cut(k, "{"); name != prev {
+				typ := map[bool]string{true: "counter", false: "gauge"}[strings.HasSuffix(name, "_total")]
+				fmt.Fprintf(w, "# TYPE %s %s\n", name, typ)
+				prev = name
+			}
+			fmt.Fprintf(w, "%s %s\n", k, strconv.FormatFloat(metrics.m[k], 'f', -1, 64))
+		}
+	})
+	return mux
 }

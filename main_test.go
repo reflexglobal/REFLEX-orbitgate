@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -51,6 +52,16 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		switch {
+		case r.URL.Path == "/api/v1/namespaces" && tok == "sa" && r.URL.Query().Get("watch") == "true":
+			for _, ev := range []string{
+				`{"type":"ADDED","object":{"kind":"Namespace","metadata":{"name":"dev-a"}}}`,
+				`{"type":"ADDED","object":{"kind":"Namespace","metadata":{"name":"dev-b"}}}`,
+				`{"type":"BOOKMARK","object":{"kind":"Namespace","metadata":{"resourceVersion":"7"}}}`,
+				`{"type":"MODIFIED","object":{"kind":"Table","rows":[{"object":{"metadata":{"name":"dev-b"}}},{"object":{"metadata":{"name":"dev-a"}}}]}}`,
+				`{"type":"MODIFIED","object":{"kind":"Table","rows":[{"object":{"metadata":{"name":"dev-b"}}}]}}`,
+			} {
+				io.WriteString(w, ev+"\n")
+			}
 		case r.URL.Path == "/api/v1/namespaces" && (tok == "sa" || tok == "admin"):
 			io.WriteString(w, `{"kind":"NamespaceList","metadata":{},"items":[{"metadata":{"name":"dev-a"}},{"metadata":{"name":"dev-b"}}]}`)
 		case r.URL.Path == "/api/v1/namespaces" && tok == "alice":
@@ -90,6 +101,23 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	}
 	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ssars.Load() != 2 {
 		t.Fatalf("alice again: %d %v, SSARs %d (want cached)", code, ns, ssars.Load())
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces?watch=true", nil)
+	r.Header.Set("Authorization", "Bearer alice")
+	w := httptest.NewRecorder()
+	listNamespaces(w, r)
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
+		var ev map[string]any
+		json.Unmarshal([]byte(line), &ev)
+		obj := ev["object"].(map[string]any)
+		got = append(got, fmt.Sprintf("%v %s%v", ev["type"], nameOf(obj), names(obj)))
+	}
+	if g := strings.Join(got, ", "); g != "ADDED dev-a[], BOOKMARK [], MODIFIED [dev-a]" {
+		t.Fatalf("alice watch: %s", g)
+	}
+	if !isWatch(url.Values{"watch": {""}}) || isWatch(url.Values{"watch": {"FALSE"}}) || isWatch(nil) {
+		t.Fatal("isWatch must parse like the apiserver")
 	}
 	if code, _ := list("garbage"); code != 401 {
 		t.Fatalf("garbage: %d", code)
@@ -140,11 +168,43 @@ func TestAccessLogNoCredentials(t *testing.T) {
 	var buf strings.Builder
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	h := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	*accessLog = true
+	h := observe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/x/pods/p/exec?command=secret", nil)
 	r.Header.Set("Authorization", "Bearer s3cr3t")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	if l := buf.String(); !strings.Contains(l, "GET /api/v1/namespaces/x/pods/p/exec 403") || strings.Contains(l, "secret") || strings.Contains(l, "s3cr3t") {
 		t.Fatalf("access log: %q", l)
+	}
+}
+
+func TestMetricsAndReadyz(t *testing.T) {
+	ready := true
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ready {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer api.Close()
+	apiURL, _ = url.Parse(api.URL)
+	client = api.Client()
+	*saDir = t.TempDir()
+	get := func(path string) (int, string) {
+		w := httptest.NewRecorder()
+		metricsMux().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w.Code, w.Body.String()
+	}
+	if code, _ := get("/readyz"); code != 200 {
+		t.Fatalf("readyz: %d", code)
+	}
+	ready = false
+	if code, _ := get("/readyz"); code != 503 {
+		t.Fatalf("readyz with apiserver down: %d", code)
+	}
+	inc("orbitgate_ssar_errors_total")
+	observe(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	if _, m := get("/metrics"); !strings.Contains(m, "# TYPE orbitgate_ssar_errors_total counter\norbitgate_ssar_errors_total ") ||
+		!strings.Contains(m, `orbitgate_requests_total{code="404"} `) {
+		t.Fatalf("metrics:\n%s", m)
 	}
 }

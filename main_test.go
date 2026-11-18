@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -62,6 +63,16 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		switch {
+		case r.URL.Path == "/api/v1/namespaces" && tok == "sa" && r.URL.Query().Get("watch") == "true":
+			for _, ev := range []string{
+				`{"type":"ADDED","object":{"kind":"Namespace","metadata":{"name":"dev-a"}}}`,
+				`{"type":"ADDED","object":{"kind":"Namespace","metadata":{"name":"dev-b"}}}`,
+				`{"type":"BOOKMARK","object":{"kind":"Namespace","metadata":{"resourceVersion":"7"}}}`,
+				`{"type":"MODIFIED","object":{"kind":"Table","rows":[{"object":{"metadata":{"name":"dev-b"}}},{"object":{"metadata":{"name":"dev-a"}}}]}}`,
+				`{"type":"MODIFIED","object":{"kind":"Table","rows":[{"object":{"metadata":{"name":"dev-b"}}}]}}`,
+			} {
+				io.WriteString(w, ev+"\n")
+			}
 		case r.URL.Path == "/api/v1/namespaces" && (tok == "sa" || tok == "admin"):
 			io.WriteString(w, `{"kind":"NamespaceList","metadata":{},"items":[{"metadata":{"name":"dev-a"}},{"metadata":{"name":"dev-b"}}]}`)
 		case r.URL.Path == "/api/v1/namespaces" && tok == "alice":
@@ -101,6 +112,23 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	}
 	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ssars.Load() != 2 {
 		t.Fatalf("alice again: %d %v, SSARs %d (want cached)", code, ns, ssars.Load())
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces?watch=true", nil)
+	r.Header.Set("Authorization", "Bearer alice")
+	w := httptest.NewRecorder()
+	listNamespaces(w, r)
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
+		var ev map[string]any
+		json.Unmarshal([]byte(line), &ev)
+		obj := ev["object"].(map[string]any)
+		got = append(got, fmt.Sprintf("%v %s%v", ev["type"], nameOf(obj), names(obj)))
+	}
+	if g := strings.Join(got, ", "); g != "ADDED dev-a[], BOOKMARK [], MODIFIED [dev-a]" {
+		t.Fatalf("alice watch: %s", g)
+	}
+	if !isWatch(url.Values{"watch": {""}}) || isWatch(url.Values{"watch": {"FALSE"}}) || isWatch(nil) {
+		t.Fatal("isWatch must parse like the apiserver")
 	}
 	if code, _ := list("garbage"); code != 401 {
 		t.Fatalf("garbage: %d", code)

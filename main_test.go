@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,6 +47,7 @@ func TestFilterListAndTable(t *testing.T) {
 
 // Fake apiserver: "sa" and "admin" may list namespaces, "alice" is forbidden but may list pods in dev-a.
 func TestListNamespacesPassthroughAndFallback(t *testing.T) {
+	var ssars atomic.Int32
 	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		switch {
@@ -54,6 +56,7 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 		case r.URL.Path == "/api/v1/namespaces" && tok == "alice":
 			w.WriteHeader(http.StatusForbidden)
 		case strings.HasSuffix(r.URL.Path, "selfsubjectaccessreviews") && tok == "alice":
+			ssars.Add(1)
 			b, _ := io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"status":{"allowed":`+map[bool]string{true: "true", false: "false"}[strings.Contains(string(b), `"dev-a"`)]+`}}`)
@@ -81,6 +84,12 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	}
 	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ns[0] != "dev-a" {
 		t.Fatalf("alice: %d %v", code, ns)
+	}
+	if n := ssars.Load(); n != 2 {
+		t.Fatalf("alice: %d SSARs, want 2", n)
+	}
+	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ssars.Load() != 2 {
+		t.Fatalf("alice again: %d %v, SSARs %d (want cached)", code, ns, ssars.Load())
 	}
 	if code, _ := list("garbage"); code != 401 {
 		t.Fatalf("garbage: %d", code)

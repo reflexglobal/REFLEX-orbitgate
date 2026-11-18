@@ -5,7 +5,7 @@ type: application
 version: 0.1.0      # set from the git tag by CI
 appVersion: "0.1.0" # set from the git tag by CI
 kubeVersion: ">=1.25.0-0"
-icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/logo.svg
+icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/icon.png
 home: https://github.com/reflexglobal/REFLEX-orbitgate
 sources: [https://github.com/reflexglobal/REFLEX-orbitgate]
 keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap, airlock]
@@ -26,6 +26,8 @@ annotations:
       description: TLS cert hot reload, cert-manager renewals need no restart
     - kind: added
       description: cert-manager support via an existing CA secret or Issuer/ClusterIssuer
+    - kind: added
+      description: Run as a Deployment, or as a DaemonSet on control-plane nodes with optional hostNetwork
   # Image tag is rewritten to the release version by CI; ArtifactHub security-scans it.
   artifacthub.io/images: |
     - name: orbitgate

@@ -11,7 +11,7 @@ There are two TLS legs:
 
 ## Ground rules
 
-- **SANs:** the cert must list every DNS name and IP users put in their kubeconfig `server:` (node IPs for NodePort, the LB IP/DNS). kubectl ignores the CN.
+- **SANs:** the cert must list every DNS name and IP users put in their kubeconfig `server:` (node IPs for NodePort, control-plane IPs for DaemonSet + `hostNetwork`, the LB IP/DNS). kubectl ignores the CN.
 - **Trust:** users' kubeconfig `certificate-authority-data` must hold the CA that *signed* the cert, not the leaf.
 - **Long CA, short leaf:** a long-lived CA (5–10 years) goes into kubeconfigs once, and short-lived leaves (90 days to 1 year) rotate under it. Users never notice a leaf rotation. A *CA* change means redistributing kubeconfigs.
 - **Hot reload:** Orbitgate re-reads `tls.crt`/`tls.key` when the secret changes. Kubelet syncs secret volumes within about 1–2 minutes, and **no restart is needed**. This only works because the chart mounts the secret as a directory; never switch to a `subPath` mount (those never update). If a reload fails halfway, Orbitgate keeps serving the last good cert and logs `TLS reload failed`.

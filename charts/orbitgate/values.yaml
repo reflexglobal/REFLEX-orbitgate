@@ -4,7 +4,29 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-replicas: 2
+# Deployment: normal pods behind the Service.
+# DaemonSet: one pod on every control-plane node (scheduling from daemonSet.* below).
+kind: Deployment
+replicas: 2  # Deployment only
+
+# DaemonSet only: listen directly on each control-plane node's IP at listenPort,
+# next to the apiserver. Users then use the control-plane IPs; no NodePort needed.
+hostNetwork: false
+listenPort: 8443  # pick a free port on the nodes when hostNetwork is on
+
+daemonSet:
+  # Matches kubeadm (control-plane: "") and RKE2/k3s (control-plane: "true").
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: node-role.kubernetes.io/control-plane, operator: Exists}
+  tolerations:
+    - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+    - {key: node-role.kubernetes.io/master, operator: Exists, effect: NoSchedule}
+    - {key: node-role.kubernetes.io/etcd, operator: Exists, effect: NoExecute}
+    - {key: CriticalAddonsOnly, operator: Exists}
 
 service:
   type: NodePort  # or LoadBalancer / ClusterIP
@@ -36,5 +58,7 @@ extraArgs: []
 resources:
   requests: {cpu: 10m, memory: 32Mi}
   limits: {memory: 128Mi}
+# Deployment scheduling (DaemonSet uses daemonSet.* above). nodeSelector applies to both.
 nodeSelector: {}
+affinity: {}
 tolerations: []

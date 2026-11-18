@@ -1,4 +1,4 @@
-<img src="docs/logo.svg" width="96" align="right" alt="Orbitgate logo">
+<p align="center"><img src="docs/logo.png" width="220" alt="Orbitgate"></p>
 
 # Orbitgate
 
@@ -12,7 +12,7 @@ Everything else is the apiserver's job, unchanged:
 
 - Authentication, RBAC, admission and audit all run on the apiserver. Orbitgate forwards the user's credentials untouched.
 - Orbitgate never sees a decision it could get wrong, and it holds no rights beyond `list namespaces`.
-- It runs next to the real apiserver (NodePort or LoadBalancer). The apiserver itself is unchanged, and admins can keep using it directly.
+- It runs next to the real apiserver: as normal pods (NodePort or LoadBalancer), or as a DaemonSet on the control-plane nodes, optionally listening directly on their IPs. The apiserver itself is unchanged, and admins can keep using it directly.
 
 ```
 kubectl --(user's own token)--> orbitgate --(same token, untouched)--> kube-apiserver
@@ -75,8 +75,13 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | value | default | |
 |---|---|---|
 | `image.repository` / `image.tag` | `ghcr.io/reflexglobal/orbitgate` / appVersion | |
-| `replicas` | 2 | |
-| `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer` |
+| `kind` | `Deployment` | `Deployment`: normal pods behind the Service. `DaemonSet`: one pod on every control-plane node |
+| `replicas` | 2 | Deployment only |
+| `hostNetwork` | false | DaemonSet only: listen directly on each control-plane node IP at `listenPort` |
+| `listenPort` | 8443 | container port, or node port with `hostNetwork` (must be free on the nodes) |
+| `daemonSet.affinity` / `.tolerations` | control-plane nodes (kubeadm, RKE2, k3s) | DaemonSet scheduling |
+| `nodeSelector` / `affinity` / `tolerations` | | Deployment scheduling (`nodeSelector` applies to both) |
+| `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer`; `ClusterIP` is enough with `hostNetwork` |
 | `tls.secretName` | `orbitgate-tls` | bring your own, or let cert-manager create it |
 | `tls.certManager.enabled` | false | see [docs/TLS.md](docs/TLS.md) |
 | `tls.certManager.caSecretName` | | existing CA secret in the release namespace; the chart makes an Issuer |
@@ -116,7 +121,7 @@ Each release also signs the image and chart with cosign (keyless) and publishes 
 1. Replace `artifacthub.io/changes` in `charts/orbitgate/Chart.yaml` with this version's entries. This is the changelog shown on ArtifactHub.
 2. Commit, then `git tag vX.Y.Z && git push --tags`.
 
-ArtifactHub (repo `orbitgate`, `oci://ghcr.io/reflexglobal/charts/orbitgate`) can only read the chart while the GHCR packages are **public**. The logo (`docs/logo.svg`) shows once the GitHub repo is public too.
+ArtifactHub (repo `orbitgate`, `oci://ghcr.io/reflexglobal/charts/orbitgate`) can only read the chart while the GHCR packages are **public**. The icon (`docs/icon.png`) shows once the GitHub repo is public too.
 
 ## Develop
 

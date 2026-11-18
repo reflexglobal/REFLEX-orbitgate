@@ -37,8 +37,8 @@ kubectl -n dev-b create rolebinding bob --clusterrole=edit --serviceaccount=user
 kubectl create clusterrolebinding orbitgate-test-admin --clusterrole=cluster-admin --serviceaccount=users:admin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 sleep 3  # RBAC informer lag
 
-kubectl -n orbitgate port-forward svc/orbitgate 18443:443 >/dev/null &
-sleep 2
+pf() { [ -n "${pfpid:-}" ] && kill "$pfpid"; kubectl -n orbitgate port-forward svc/orbitgate 18443:443 >/dev/null & pfpid=$!; sleep 2; }
+pf
 
 token() { kubectl -n users create token "$1"; }
 og() { local t=$1; shift; KUBECONFIG=/dev/null kubectl --server=https://localhost:18443 --certificate-authority="$tmp/ca.crt" --token="$t" "$@"; }
@@ -68,6 +68,18 @@ sleep 2
 ev=$(docker exec "$C-control-plane" grep "\"$probe\"" /var/log/kubernetes/audit.log | grep '"verb":"create"' | tail -1)
 check "audit user is alice" "$(echo "$ev" | python3 -c 'import json,sys; e=json.load(sys.stdin); print(e["user"]["username"], "impersonated" if "impersonatedUser" in e else "direct")')" "system:serviceaccount:users:alice direct"
 check "audit sourceIPs has client first" "$(echo "$ev" | python3 -c 'import json,sys; s=json.load(sys.stdin)["sourceIPs"]; print(len(s)>1 and s[0]=="127.0.0.1")')" "True"
+
+# DaemonSet on control planes with hostNetwork: listens on the node IP itself, next to the apiserver.
+helm upgrade orbitgate charts/orbitgate -n orbitgate --reuse-values \
+  --set kind=DaemonSet --set hostNetwork=true --set listenPort=9443 >/dev/null
+kubectl -n orbitgate rollout status ds/orbitgate --timeout=120s >/dev/null
+check "daemonset: one pod per control plane" "$(kubectl -n orbitgate get ds orbitgate -o jsonpath='{.status.numberReady}')" "$(kubectl get nodes -l node-role.kubernetes.io/control-plane -o name | grep -c .)"
+check "daemonset: deployment gone" "$(kubectl -n orbitgate get deploy -o name | grep -c .)" "0"
+check "daemonset: listens on node IP" "$(docker exec "$C-control-plane" curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $alice" https://127.0.0.1:9443/api/v1/namespaces)" "200"
+pf
+check "daemonset: alice sees only dev-a" "$(nss "$alice")" "namespace/dev-a"
+check "daemonset: admin passthrough" "$(og "$admin" get ns -o name | grep -c .)" "$(kubectl get ns -o name | grep -c .)"
+check "daemonset: exec" "$(og "$alice" -n dev-a exec e2e -- echo hi 2>&1)" "hi"
 
 # Cert rotation from an existing in-cluster CA (tls.certManager.caSecretName): running pods must pick it up, no restart.
 served() { openssl s_client -connect localhost:18443 -servername localhost </dev/null 2>/dev/null | openssl x509 -noout -serial; }

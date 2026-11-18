@@ -1,10 +1,14 @@
+{{- $ds := eq .Values.kind "DaemonSet" }}
+{{- if and .Values.hostNetwork (not $ds) }}{{ fail "hostNetwork is only supported with kind: DaemonSet" }}{{ end }}
 apiVersion: apps/v1
-kind: Deployment
+kind: {{ .Values.kind }}
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
 spec:
+  {{- if not $ds }}
   replicas: {{ .Values.replicas }}
+  {{- end }}
   selector:
     matchLabels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ .Release.Name }}}
   template:
@@ -12,6 +16,10 @@ spec:
       labels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ .Release.Name }}}
     spec:
       serviceAccountName: {{ .Release.Name }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet  # still resolve kubernetes.default.svc
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
       {{- end }}
@@ -23,13 +31,14 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
+            - -listen=:{{ .Values.listenPort }}
             - -tls-cert=/tls/tls.crt
             - -tls-key=/tls/tls.key
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
           ports:
-            - {name: https, containerPort: 8443}
+            - {name: https, containerPort: {{ .Values.listenPort }}}
           readinessProbe:
             tcpSocket: {port: https}
           securityContext:
@@ -42,9 +51,12 @@ spec:
       volumes:
         - name: tls
           secret: {secretName: {{ .Values.tls.secretName }}}
+      {{- with ($ds | ternary .Values.daemonSet.affinity .Values.affinity) }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($ds | ternary .Values.daemonSet.tolerations .Values.tolerations) }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations: {{ toYaml . | nindent 8 }}
       {{- end }}

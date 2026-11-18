@@ -36,6 +36,7 @@ var (
 	apiserver = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
 	saDir     = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
 	printVer  = flag.Bool("version", false, "print the version and exit")
+	accessLog = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
 )
 
 var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
@@ -74,13 +75,16 @@ func main() {
 		},
 	}
 
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" && r.URL.Query().Get("watch") == "" {
 			listNamespaces(w, r)
 			return
 		}
 		proxy.ServeHTTP(w, r)
 	})
+	if *accessLog {
+		h = logRequests(h)
+	}
 
 	// No ReadTimeout/WriteTimeout: they would cut watches, logs -f, exec and port-forward.
 	srv := &http.Server{Addr: *listen, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
@@ -119,6 +123,40 @@ func main() {
 	}
 	<-done
 }
+
+// logRequests logs one line per request. Only the path: query strings can carry secrets (exec commands).
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		if sw.code == 0 && r.Header.Get("Upgrade") != "" {
+			sw.code = http.StatusSwitchingProtocols // hijacked: exec, attach, port-forward
+		}
+		log.Printf("%s %s %s %d %s", r.RemoteAddr, r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+// statusWriter records the status code. Unwrap keeps Flush/Hijack working via http.ResponseController.
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.code == 0 {
+		s.code = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.code == 0 {
+		s.code = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // certReloader re-reads the cert when the file changes, so cert-manager/secret
 // rotation is picked up without a restart. Mount the secret as a directory, not

@@ -66,6 +66,8 @@ Because credentials are passed through, audit events look exactly like direct ap
 
 The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any client-sent value is replaced).
 
+Orbitgate itself logs no requests by default; the audit log is the record. To debug network paths, `-access-log` (chart: `extraArgs: [-access-log]`) logs client IP, method, path, status and duration per request. It never logs credentials or query strings.
+
 ## Requirements
 
 **Cluster:** any Kubernetes with RBAC. Also needed:

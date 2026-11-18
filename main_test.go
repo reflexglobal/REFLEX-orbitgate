@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -156,5 +157,18 @@ func TestCertReload(t *testing.T) {
 	os.Chtimes(dir+"/tls.crt", now.Add(2*time.Second), now.Add(2*time.Second))
 	if cn() != "new" {
 		t.Fatal("broken rotation should keep last good cert")
+	}
+}
+
+func TestAccessLogNoCredentials(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	h := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/x/pods/p/exec?command=secret", nil)
+	r.Header.Set("Authorization", "Bearer s3cr3t")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if l := buf.String(); !strings.Contains(l, "GET /api/v1/namespaces/x/pods/p/exec 403") || strings.Contains(l, "secret") || strings.Contains(l, "s3cr3t") {
+		t.Fatalf("access log: %q", l)
 	}
 }

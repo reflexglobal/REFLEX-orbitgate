@@ -26,7 +26,7 @@ openssl x509 -req -in "$tmp/tls.csr" -CA "$tmp/ca.crt" -CAkey "$tmp/ca.key" -CAc
 kubectl create ns orbitgate --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 helm upgrade --install orbitgate charts/orbitgate -n orbitgate \
   --set image.repository=orbitgate --set image.tag=dev --set tls.certManager.enabled=false \
-  --set networkPolicy.enabled=true >/dev/null  # first: drops a cert-manager Certificate left by a previous run
+  --set networkPolicy.enabled=true --set 'extraArgs={-access-log,-access-log-json}' >/dev/null  # first: drops a cert-manager Certificate left by a previous run
 kubectl -n orbitgate create secret tls orbitgate-tls --cert="$tmp/tls.crt" --key="$tmp/tls.key" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n orbitgate rollout restart deploy/orbitgate >/dev/null  # pick up the rebuilt :dev image
@@ -70,6 +70,9 @@ check "alice logs (through proxy)" "$(og "$alice" -n dev-a logs e2e)" "hello-log
 check "alice exec (upgrade through proxy)" "$(og "$alice" -n dev-a exec e2e -- echo hi 2>&1)" "hi"
 check "alice denied dev-b" "$(og "$alice" -n dev-b get pods 2>&1 | grep -c Forbidden)" "1"
 check "alice can't impersonate admin" "$(og "$alice" --as=system:serviceaccount:users:admin -n dev-b get pods 2>&1 | grep -c 'cannot impersonate')" "1"
+jsonlog() { kubectl -n orbitgate logs -l app.kubernetes.io/name=orbitgate --tail=100000 | grep '"user":"system:serviceaccount:users:alice"' | grep -c '"verb":"create","apiGroup":"apps","namespace":"dev-a","resource":"deployments"'; }
+for _ in $(seq 10); do [ "$(jsonlog)" != 0 ] && break; sleep 1; done  # --tail: with -l, kubectl defaults to 10 lines
+check "json access log names alice" "$([ "$(jsonlog)" != 0 ] && echo yes)" "yes"
 check "bad token rejected" "$(og garbage get ns 2>&1 | grep -c "must be logged in")" "1"
 
 # Audit: a write through the proxy is logged as alice herself, not as Orbitgate.

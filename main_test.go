@@ -241,3 +241,40 @@ func TestMetricsAndReadyz(t *testing.T) {
 		t.Fatalf("metrics:\n%s", m)
 	}
 }
+
+func TestParseRequestAndWhoami(t *testing.T) {
+	for _, c := range []struct{ method, path, want string }{
+		{"GET", "/api/v1/namespaces/dev-a/pods", "list  dev-a pods  "},
+		{"GET", "/api/v1/namespaces/dev-a/pods?watch=1", "watch  dev-a pods  "},
+		{"POST", "/api/v1/namespaces/dev-a/pods/p1/exec?command=x", "create  dev-a pods exec p1"},
+		{"DELETE", "/apis/apps/v1/namespaces/dev-a/deployments/web", "delete apps dev-a deployments  web"},
+		{"GET", "/api/v1/namespaces/dev-a", "get  dev-a namespaces  dev-a"},
+		{"PUT", "/api/v1/namespaces/dev-a/finalize", "update  dev-a namespaces finalize dev-a"},
+		{"GET", "/version", "get     "},
+	} {
+		u, _ := url.Parse(c.path)
+		ri := parseRequest(c.method, u)
+		if got := strings.Join([]string{ri.verb, ri.group, ri.namespace, ri.resource, ri.subresource, ri.name}, " "); got != c.want {
+			t.Errorf("%s %s: got %q want %q", c.method, c.path, got, c.want)
+		}
+	}
+
+	var calls atomic.Int32
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"status":{"userInfo":{"username":"alice","groups":["devs","system:authenticated"]}}}`)
+	}))
+	defer api.Close()
+	apiURL, _ = url.Parse(api.URL)
+	client = api.Client()
+	h := http.Header{"Authorization": {"Bearer alice"}}
+	for range 2 {
+		if u, err := whoami(h); err != nil || u.Username != "alice" || len(u.Groups) != 2 {
+			t.Fatalf("whoami: %v %v", u, err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("SelfSubjectReview not cached: %d calls", calls.Load())
+	}
+}

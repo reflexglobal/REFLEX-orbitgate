@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httputil"
@@ -44,6 +45,7 @@ var (
 	tenantGroup = flag.String("tenant-group", "", "tenant check: API group of -tenant-resource (empty = core)")
 	metricsAddr = flag.String("metrics-listen", "", "plain-HTTP listener for /metrics, /healthz, /readyz (e.g. :9090; empty = off)")
 	accessLog   = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
+	accessJSON  = flag.Bool("access-log-json", false, "with -access-log: JSON lines that add the caller's user/groups (SelfSubjectReview, cached), verb, namespace, resource")
 )
 
 var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
@@ -146,6 +148,10 @@ func observe(next http.Handler) http.Handler {
 		}
 		inc(fmt.Sprintf("orbitgate_requests_total{code=%q}", strconv.Itoa(sw.code)))
 		if !*accessLog {
+			return
+		}
+		if *accessJSON {
+			go logJSON(r.RemoteAddr, r.Method, r.URL, r.Header.Clone(), sw.code, time.Since(start)) // identity lookup off the request path
 			return
 		}
 		log.Printf("%s %s %s %d %s", r.RemoteAddr, r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
@@ -652,4 +658,118 @@ func metricsMux() *http.ServeMux {
 		}
 	})
 	return mux
+}
+
+var jsonLog = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+func logJSON(client, method string, u *url.URL, h http.Header, code int, d time.Duration) {
+	ri := parseRequest(method, u)
+	attrs := []any{"client", client, "method", method, "path", u.Path, "verb", ri.verb, "apiGroup", ri.group,
+		"namespace", ri.namespace, "resource", ri.resource, "subresource", ri.subresource, "name", ri.name,
+		"code", code, "allowed", code != http.StatusUnauthorized && code != http.StatusForbidden, "durationMs", d.Milliseconds()}
+	if code != http.StatusUnauthorized {
+		if who, err := whoami(h); err != nil {
+			attrs = append(attrs, "identityError", err.Error())
+		} else {
+			attrs = append(attrs, "user", who.Username, "groups", who.Groups)
+		}
+	}
+	jsonLog.Info("request", attrs...)
+}
+
+type reqInfo struct{ verb, group, namespace, resource, subresource, name string }
+
+// parseRequest is a small version of the apiserver's RequestInfo: enough for a log line, not for decisions.
+func parseRequest(method string, u *url.URL) (ri reqInfo) {
+	p := strings.Split(strings.Trim(u.Path, "/"), "/")
+	switch {
+	case len(p) >= 2 && p[0] == "api":
+		p = p[2:]
+	case len(p) >= 3 && p[0] == "apis":
+		ri.group, p = p[1], p[3:]
+	default: // non-resource URL: /version, /healthz, discovery
+		ri.verb = strings.ToLower(method)
+		return
+	}
+	if len(p) >= 2 && p[0] == "namespaces" {
+		ri.namespace = p[1]
+		if len(p) > 2 && p[2] != "status" && p[2] != "finalize" { // namespaces/x/status is the namespace's own subresource
+			p = p[2:]
+		}
+	}
+	for i, f := range []*string{&ri.resource, &ri.name, &ri.subresource} {
+		if i < len(p) {
+			*f = p[i]
+		}
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		ri.verb = map[bool]string{true: "get", false: "list"}[ri.name != ""]
+		if isWatch(u.Query()) {
+			ri.verb = "watch"
+		}
+	case http.MethodPost:
+		ri.verb = "create"
+	case http.MethodPut:
+		ri.verb = "update"
+	case http.MethodPatch:
+		ri.verb = "patch"
+	case http.MethodDelete:
+		ri.verb = map[bool]string{true: "delete", false: "deletecollection"}[ri.name != ""]
+	default:
+		ri.verb = strings.ToLower(method)
+	}
+	return
+}
+
+type userInfo struct {
+	Username string   `json:"username"`
+	Groups   []string `json:"groups"`
+}
+
+type whoResult struct {
+	u   userInfo
+	exp time.Time
+}
+
+var whoCache = map[[32]byte]whoResult{} // guarded by ssarMu
+
+// whoami asks the apiserver who the caller is (SelfSubjectReview, GA in 1.28), cached per credential for ssarTTL.
+func whoami(h http.Header) (userInfo, error) {
+	k := credKey(h)
+	ssarMu.Lock()
+	r, hit := whoCache[k]
+	ssarMu.Unlock()
+	if hit && time.Now().Before(r.exp) {
+		return r.u, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.JoinPath("/apis/authentication.k8s.io/v1/selfsubjectreviews").String(),
+		strings.NewReader(`{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}`))
+	req.Header.Set("Content-Type", "application/json")
+	userAuth(req, h)
+	resp, err := client.Do(req)
+	if err != nil {
+		return userInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return userInfo{}, fmt.Errorf("SelfSubjectReview: %s", resp.Status)
+	}
+	var out struct {
+		Status struct {
+			UserInfo userInfo `json:"userInfo"`
+		} `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return userInfo{}, err
+	}
+	ssarMu.Lock()
+	if len(whoCache) > 10000 { // ponytail: drop everything at the cap; entries refill on demand
+		clear(whoCache)
+	}
+	whoCache[k] = whoResult{out.Status.UserInfo, time.Now().Add(ssarTTL)}
+	ssarMu.Unlock()
+	return out.Status.UserInfo, nil
 }

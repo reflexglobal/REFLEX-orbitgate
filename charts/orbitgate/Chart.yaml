@@ -5,9 +5,9 @@ type: application
 version: 0.0.1-alpha      # set from the git tag by CI
 appVersion: "0.0.1-alpha" # set from the git tag by CI
 kubeVersion: ">=1.25.0-0"
-icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/icon.png
-home: https://github.com/reflexglobal/REFLEX-orbitgate
-sources: [https://github.com/reflexglobal/REFLEX-orbitgate]
+icon: https://raw.githubusercontent.com/reflexglobal/orbitgate/main/docs/icon.png
+home: https://github.com/reflexglobal/orbitgate
+sources: [https://github.com/reflexglobal/orbitgate]
 keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap]
 maintainers:
   - name: REFLEX GLOBAL B.V.
@@ -24,6 +24,6 @@ annotations:
       platforms: [linux/amd64, linux/arm64]
   artifacthub.io/links: |
     - name: TLS and certificate guide
-      url: https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/TLS.md
+      url: https://github.com/reflexglobal/orbitgate/blob/main/docs/TLS.md
     - name: Static pod on Talos (no ServiceAccount)
-      url: https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/static-pod.md
+      url: https://github.com/reflexglobal/orbitgate/blob/main/docs/static-pod.md

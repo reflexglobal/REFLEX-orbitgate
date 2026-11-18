@@ -2,8 +2,8 @@
 
 # Orbitgate
 
-[![Release](https://img.shields.io/github/v/release/reflexglobal/REFLEX-orbitgate?include_prereleases&sort=semver&label=version)](https://github.com/reflexglobal/REFLEX-orbitgate/releases)
-[![Chart](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Freflexglobal%2FREFLEX-orbitgate%2Fmain%2Fcharts%2Forbitgate%2FChart.yaml&query=%24.version&label=helm%20chart&prefix=v)](charts/orbitgate)
+[![Release](https://img.shields.io/github/v/release/reflexglobal/orbitgate?include_prereleases&sort=semver&label=version)](https://github.com/reflexglobal/orbitgate/releases)
+[![Chart](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Freflexglobal%2Forbitgate%2Fmain%2Fcharts%2Forbitgate%2FChart.yaml&query=%24.version&label=helm%20chart&prefix=v)](charts/orbitgate)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/orbitgate)](https://artifacthub.io/packages/search?repo=orbitgate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 

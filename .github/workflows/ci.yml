@@ -129,8 +129,8 @@ jobs:
           CHANGES="$(.github/changes.sh)" yq -i '.annotations["artifacthub.io/changes"] = strenv(CHANGES)' charts/orbitgate/Chart.yaml
           yq '.annotations["artifacthub.io/changes"]' charts/orbitgate/Chart.yaml
           # Chart README = repo README, with relative links/images made absolute so they work on artifacthub.io
-          sed -E -e 's#\]\(([^h#)][^)]*)\)#](https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/\1)#g' \
-                 -e 's#src="([^h"][^"]*)"#src="https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/\1"#g' \
+          sed -E -e 's#\]\(([^h#)][^)]*)\)#](https://github.com/reflexglobal/orbitgate/blob/main/\1)#g' \
+                 -e 's#src="([^h"][^"]*)"#src="https://raw.githubusercontent.com/reflexglobal/orbitgate/main/\1"#g' \
                  README.md > charts/orbitgate/README.md
       - name: Push chart
         run: |

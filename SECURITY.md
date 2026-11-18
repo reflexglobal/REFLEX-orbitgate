@@ -36,6 +36,6 @@ Images and charts are signed with cosign (keyless, GitHub Actions OIDC):
 
 ```sh
 cosign verify ghcr.io/reflexglobal/orbitgate:<version> \
-  --certificate-identity-regexp '^https://github.com/reflexglobal/REFLEX-orbitgate/' \
+  --certificate-identity-regexp '^https://github.com/reflexglobal/orbitgate/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

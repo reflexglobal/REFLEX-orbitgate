@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -273,11 +275,13 @@ func saToken() string {
 // userAuth copies the caller's credentials (and any Impersonate-* the apiserver will judge) onto req.
 func userAuth(req *http.Request, from http.Header) {
 	for k, v := range from {
-		if k == "Authorization" || strings.HasPrefix(k, "Impersonate-") {
+		if isCred(k) {
 			req.Header[k] = v
 		}
 	}
 }
+
+func isCred(k string) bool { return k == "Authorization" || strings.HasPrefix(k, "Impersonate-") }
 
 // listNamespaces first asks the apiserver as the user. Allowed (e.g. cluster-admin):
 // the real answer passes through untouched. Forbidden: list with the proxy SA and keep
@@ -392,27 +396,94 @@ func filter(body map[string]any, allowed map[string]bool) {
 	}
 }
 
-// ponytail: one SelfSubjectAccessReview per namespace, 16 in flight. Cache per (token, ns) if clusters get big.
+// SSAR results are cached per (credentials, namespace) for ssarTTL, and at most 32 SSARs are in
+// flight across all requests, so a tenant looping `get ns` can't multiply apiserver load.
+// Trade-off: a granted/revoked binding shows up in the namespace list up to ssarTTL late.
+const ssarTTL = 30 * time.Second
+
+type ssarKey struct {
+	cred [32]byte
+	ns   string
+}
+
+type ssarResult struct {
+	ok  bool
+	exp time.Time
+}
+
+var (
+	ssarSlots = make(chan struct{}, 32)
+	ssarMu    sync.Mutex
+	ssarCache = map[ssarKey]ssarResult{}
+	ssarSwept time.Time
+)
+
+// credKey identifies the caller by everything userAuth forwards (token + Impersonate-*).
+func credKey(h http.Header) [32]byte {
+	var b strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(h)) {
+		if isCred(k) {
+			fmt.Fprintf(&b, "%s=%q\n", k, h[k])
+		}
+	}
+	return sha256.Sum256([]byte(b.String()))
+}
+
+func cachedSSAR(k ssarKey) (ok, hit bool) {
+	ssarMu.Lock()
+	defer ssarMu.Unlock()
+	r, hit := ssarCache[k]
+	return r.ok, hit && time.Now().Before(r.exp)
+}
+
+func storeSSAR(k ssarKey, ok bool) {
+	ssarMu.Lock()
+	defer ssarMu.Unlock()
+	now := time.Now()
+	ssarCache[k] = ssarResult{ok, now.Add(ssarTTL)}
+	if now.Sub(ssarSwept) > ssarTTL { // ponytail: full sweep once per TTL; size is bounded by request rate
+		for k, r := range ssarCache {
+			if now.After(r.exp) {
+				delete(ssarCache, k)
+			}
+		}
+		ssarSwept = now
+	}
+}
+
 func allowedNamespaces(ctx context.Context, user http.Header, nss []string) map[string]bool {
+	cred := credKey(user)
 	allowed := map[string]bool{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 16)
+	defer wg.Wait()
 	for _, ns := range nss {
+		k := ssarKey{cred, ns}
+		if ok, hit := cachedSSAR(k); hit {
+			mu.Lock()
+			allowed[ns] = ok
+			mu.Unlock()
+			continue
+		}
+		select {
+		case ssarSlots <- struct{}{}:
+		case <-ctx.Done(): // client gone; unchecked namespaces stay hidden
+			return allowed
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
-			defer func() { <-sem; wg.Done() }()
+			defer func() { <-ssarSlots; wg.Done() }()
 			ok, err := canSeeNamespace(ctx, user, ns)
 			if err != nil {
-				log.Printf("SSAR %s: %v", ns, err) // fail closed
+				log.Printf("SSAR %s: %v", ns, err) // fail closed, not cached
+			} else {
+				storeSSAR(k, ok)
 			}
 			mu.Lock()
 			allowed[ns] = ok
 			mu.Unlock()
 		}()
 	}
-	wg.Wait()
 	return allowed
 }
 

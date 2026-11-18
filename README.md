@@ -50,6 +50,8 @@ For `GET /api/v1/namespaces` (a list, not a watch):
 2. If the apiserver says **403**, Orbitgate lists namespaces with its own ServiceAccount. It then asks the apiserver *as the user* (a `SelfSubjectAccessReview`) whether the user can `list pods` in each namespace.
 3. Only namespaces where the answer is yes are returned. If a check errors, that namespace is hidden (fail closed). `remainingItemCount` is removed so the total count doesn't leak.
 
+Access-review answers are cached for 30 seconds per credential and namespace, and at most 32 run at once across all users, so repeated `get ns` calls don't multiply apiserver load. A new or removed RoleBinding can therefore take up to 30 seconds to show in `get ns` (RBAC on the namespace itself applies immediately).
+
 Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward, and namespace watches) is proxied unchanged, and RBAC decides.
 
 "Tenant of a namespace" means "can list pods there" by default, which `view`, `edit` and `admin` all grant. A custom role without pods won't show up in `get ns`, though it still works with `-n <ns>`. To use another check, set `-tenant-verb`, `-tenant-resource` and `-tenant-group` (chart: `extraArgs: [-tenant-resource=configmaps]`, or `[-tenant-group=example.com, -tenant-resource=widgets]` for a CRD).
@@ -62,7 +64,7 @@ Because credentials are passed through, audit events look exactly like direct ap
 |---|---|
 | any request via Orbitgate | `user.username` = the real user, no `impersonatedUser`; `sourceIPs` = [client IP, Orbitgate pod IP] |
 | `get ns` by a cluster-admin | one normal `list namespaces` by that user |
-| `get ns` by a tenant | a `list namespaces` by the user (403), a `list namespaces` by `system:serviceaccount:<ns>:orbitgate`, and one `create selfsubjectaccessreviews` by the user per namespace |
+| `get ns` by a tenant | a `list namespaces` by the user (403), a `list namespaces` by `system:serviceaccount:<ns>:orbitgate`, and one `create selfsubjectaccessreviews` by the user per namespace (results cached 30s per credential) |
 
 The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any client-sent value is replaced).
 

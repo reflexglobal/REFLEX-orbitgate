@@ -34,13 +34,17 @@ spec:
             - -listen=:{{ .Values.listenPort }}
             - -tls-cert=/tls/tls.crt
             - -tls-key=/tls/tls.key
+            - -metrics-listen=:{{ .Values.metricsPort }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
           ports:
             - {name: https, containerPort: {{ .Values.listenPort }}}
+            - {name: metrics, containerPort: {{ .Values.metricsPort }}}
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
           readinessProbe:
-            tcpSocket: {port: https}
+            httpGet: {path: /readyz, port: metrics}  # ready when the apiserver answers
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

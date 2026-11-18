@@ -32,10 +32,10 @@ Ideally use an **intermediate CA** signed by your offline root, so the root key 
 **A1: an existing CA secret in the cluster** (`caSecretName`). The chart creates an `Issuer` for it. The secret must be in Orbitgate's namespace and hold the CA's `tls.crt` + `tls.key`:
 
 ```sh
-kubectl -n orbitgate create secret tls airlock-ca --cert=intermediate.crt --key=intermediate.key
+kubectl -n orbitgate create secret tls orbitgate-ca --cert=intermediate.crt --key=intermediate.key
 helm upgrade --install orbitgate oci://ghcr.io/reflexglobal/charts/orbitgate -n orbitgate --version X.Y.Z \
   --set tls.certManager.enabled=true \
-  --set tls.certManager.caSecretName=airlock-ca \
+  --set tls.certManager.caSecretName=orbitgate-ca \
   --set 'tls.certManager.dnsNames={orbitgate.example.internal}' \
   --set 'tls.certManager.ipAddresses={10.0.0.10}'
 ```
@@ -46,7 +46,7 @@ helm upgrade --install orbitgate oci://ghcr.io/reflexglobal/charts/orbitgate -n 
 helm upgrade --install orbitgate ... \
   --set tls.certManager.enabled=true \
   --set tls.certManager.issuerRef.kind=ClusterIssuer \
-  --set tls.certManager.issuerRef.name=airlock-ca \
+  --set tls.certManager.issuerRef.name=my-ca \
   --set 'tls.certManager.dnsNames={orbitgate.example.internal}'
 ```
 
@@ -64,7 +64,7 @@ Yes, this works. Make your own small CA and a leaf, not a single self-signed lea
 
 ```sh
 # 1. CA: 10 years. Keep ca.key offline, it is only needed to sign leaves.
-openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=Airlock Orbitgate CA" \
+openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=Orbitgate CA" \
   -keyout ca.key -out ca.crt
 
 # 2. Leaf: 1 year. List every name/IP users connect to.

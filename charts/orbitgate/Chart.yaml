@@ -1,6 +1,6 @@
 apiVersion: v2
 name: orbitgate
-description: Pass-through kube-apiserver proxy that only shows tenants their own namespaces. Part of Reflex Airlock.
+description: Pass-through kube-apiserver proxy that only shows tenants their own namespaces.
 type: application
 version: 0.0.1-alpha      # set from the git tag by CI
 appVersion: "0.0.1-alpha" # set from the git tag by CI
@@ -8,7 +8,7 @@ kubeVersion: ">=1.25.0-0"
 icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/icon.png
 home: https://github.com/reflexglobal/REFLEX-orbitgate
 sources: [https://github.com/reflexglobal/REFLEX-orbitgate]
-keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap, airlock]
+keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap]
 maintainers:
   - name: REFLEX GLOBAL B.V.
     url: https://github.com/reflexglobal

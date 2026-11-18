@@ -101,9 +101,9 @@ pods=$(kubectl -n orbitgate get pods -o name | sort)
 before=$(served)
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml >/dev/null
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=180s >/dev/null
-kubectl -n orbitgate create secret tls airlock-ca --cert="$tmp/ca.crt" --key="$tmp/ca.key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl -n orbitgate create secret tls orbitgate-ca --cert="$tmp/ca.crt" --key="$tmp/ca.key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 until helm upgrade orbitgate charts/orbitgate -n orbitgate --reuse-values \
-  --set tls.certManager.enabled=true --set tls.certManager.caSecretName=airlock-ca \
+  --set tls.certManager.enabled=true --set tls.certManager.caSecretName=orbitgate-ca \
   --set 'tls.certManager.dnsNames={localhost}' --set 'tls.certManager.ipAddresses={127.0.0.1}' >/dev/null 2>&1; do sleep 3; done  # webhook warm-up
 kubectl -n orbitgate wait --for=condition=Ready certificate/orbitgate --timeout=120s >/dev/null
 for _ in $(seq 60); do [ "$(served)" != "$before" ] && break; sleep 3; done  # kubelet syncs secret volumes every ~60s

@@ -60,7 +60,7 @@ tls:
     # b) an existing Issuer/ClusterIssuer (CA, Vault, step-ca, ...); used when caSecretName is empty
     issuerRef:
       kind: ClusterIssuer
-      name: airlock-ca
+      name: orbitgate-ca
     duration: 2160h    # 90 days
     renewBefore: 720h  # renew 30 days before expiry
     # Every name/IP users put in their kubeconfig "server:" must be listed.

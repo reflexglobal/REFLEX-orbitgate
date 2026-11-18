@@ -7,8 +7,6 @@
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/orbitgate)](https://artifacthub.io/packages/search?repo=orbitgate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Part of **Airlock**, Reflex's toolkit for airgapped Kubernetes deployments and defense clusters.
-
 Orbitgate is a small pass-through proxy in front of the kube-apiserver. It does one thing: **`kubectl get ns` only shows the namespaces you have access to.** Cluster admins see everything, and dev teams don't see each other's namespaces.
 
 Everything else is the apiserver's job, unchanged:
@@ -113,7 +111,7 @@ kubectl --context=breakglass get ns
 ```sh
 helm install orbitgate oci://ghcr.io/reflexglobal/charts/orbitgate --version <X.Y.Z> \
   -n orbitgate --create-namespace \
-  --set image.repository=<your-registry>/reflex/orbitgate \
+  --set image.repository=<your-registry>/orbitgate \
   --set tls.certManager.enabled=true --set tls.certManager.caSecretName=<your-ca-secret> \
   --set 'tls.certManager.dnsNames={orbitgate.example.internal}'
 ```
@@ -135,7 +133,7 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | `tls.secretName` | `orbitgate-tls` | bring your own, or let cert-manager create it |
 | `tls.certManager.enabled` | false | see [docs/TLS.md](docs/TLS.md) |
 | `tls.certManager.caSecretName` | | existing CA secret in the release namespace; the chart makes an Issuer |
-| `tls.certManager.issuerRef` | ClusterIssuer `airlock-ca` | existing (Cluster)Issuer, used when `caSecretName` is empty |
+| `tls.certManager.issuerRef` | ClusterIssuer `orbitgate-ca` | existing (Cluster)Issuer, used when `caSecretName` is empty |
 | `tls.certManager.dnsNames` / `ipAddresses` | | every name/IP users connect to |
 | `extraArgs` | `[]` | e.g. `-plain-http` behind a TLS-terminating LB |
 | `podDisruptionBudget.enabled` / `.minAvailable` | true / 1 | Deployment with `replicas` > 1 only |
@@ -149,7 +147,7 @@ Same user entry as for the apiserver; only the cluster's `server` and CA change:
 
 ```yaml
 clusters:
-  - name: airlock
+  - name: orbitgate
     cluster:
       server: https://orbitgate.example.internal:30443
       certificate-authority-data: <base64 of the CA that signed Orbitgate's cert>

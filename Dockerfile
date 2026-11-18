@@ -6,7 +6,7 @@ COPY go.mod *.go ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /orbitgate .
 
 # Nothing but the static binary: no shell, no libc, no CA bundle (the apiserver CA
-# comes from the ServiceAccount mount), so no base-image CVEs to patch.
+# comes from the ServiceAccount mount or -apiserver-ca), so no base-image CVEs to patch.
 FROM scratch
 LABEL org.opencontainers.image.source=https://github.com/reflexglobal/REFLEX-orbitgate \
       org.opencontainers.image.licenses=MIT

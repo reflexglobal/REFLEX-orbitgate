@@ -12,6 +12,7 @@ tmp=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$tmp"' EXIT
 
 kind get clusters | grep -qx "$C" || kind create cluster --name "$C" --kubeconfig "$KUBECONFIG" --config test/kind-config.yaml
+kubectl config use-context "kind-$C" >/dev/null  # pinned, even within the own kubeconfig
 docker build -q -t orbitgate:dev . >/dev/null
 kind load docker-image orbitgate:dev --name "$C"
 
@@ -110,4 +111,64 @@ for _ in $(seq 60); do [ "$(served)" != "$before" ] && break; sleep 3; done  # k
 check "rotated cert served without restart" "$([ "$(served)" != "$before" ] && echo yes)" "yes"
 check "pods not restarted" "$(kubectl -n orbitgate get pods -o name | sort)" "$pods"
 check "kubectl still trusts it" "$(og "$alice" get ns -o name)" "namespace/dev-a"
+
+# Static pod without a ServiceAccount (docs/static-pod.md): own client cert minted via the CSR API
+# (CN=orbitgate, no O), RBAC = list/watch namespaces only, files on the node's disk, apiserver on localhost.
+openssl req -newkey rsa:3072 -nodes -subj /CN=orbitgate -keyout "$tmp/client.key" -out "$tmp/client.csr" 2>/dev/null
+kubectl delete csr orbitgate-static --ignore-not-found >/dev/null
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata: {name: orbitgate-static}
+spec:
+  request: $(base64 < "$tmp/client.csr" | tr -d '\n')
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400
+  usages: [client auth]
+EOF
+kubectl certificate approve orbitgate-static >/dev/null
+until kubectl get csr orbitgate-static -o jsonpath='{.status.certificate}' | grep -q .; do sleep 1; done
+kubectl get csr orbitgate-static -o jsonpath='{.status.certificate}' | base64 -d > "$tmp/client.crt"
+kubectl create clusterrole orbitgate-static --verb=list,watch --resource=namespaces --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl create clusterrolebinding orbitgate-static --clusterrole=orbitgate-static --user=orbitgate --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+mkdir "$tmp/static"
+cp "$tmp/client.crt" "$tmp/client.key" "$tmp/tls.crt" "$tmp/tls.key" "$tmp/static/"
+docker exec "$C-control-plane" mkdir -p /var/lib/orbitgate
+docker cp "$tmp/static/." "$C-control-plane:/var/lib/orbitgate/" >/dev/null
+docker exec "$C-control-plane" sh -c "cp /etc/kubernetes/pki/ca.crt /var/lib/orbitgate/apiserver-ca.crt && chown -R 0:0 /var/lib/orbitgate"  # root-owned, as Talos writes them
+run=$RANDOM
+cat > "$tmp/orbitgate.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: orbitgate, namespace: kube-system, annotations: {e2e-run: "$run"}}  # new hash: kubelet recreates it on the rebuilt image
+spec:
+  hostNetwork: true
+  containers:
+    - name: orbitgate
+      image: orbitgate:dev
+      imagePullPolicy: Never
+      args: [-listen=:9444, -apiserver=https://127.0.0.1:6443, -apiserver-ca=/certs/apiserver-ca.crt,
+             -client-cert=/certs/client.crt, -client-key=/certs/client.key, -tls-cert=/certs/tls.crt, -tls-key=/certs/tls.key]
+      securityContext: {runAsUser: 0, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+      volumeMounts: [{name: certs, mountPath: /certs, readOnly: true}]
+  volumes: [{name: certs, hostPath: {path: /var/lib/orbitgate, type: Directory}}]
+EOF
+audit0=$(docker exec "$C-control-plane" sh -c "wc -l < /var/log/kubernetes/audit.log")
+docker cp "$tmp/orbitgate.yaml" "$C-control-plane:/etc/kubernetes/manifests/orbitgate.yaml" >/dev/null
+mirror="orbitgate-$C-control-plane"
+static() { docker exec "$C-control-plane" curl -sk -H "Authorization: Bearer $1" https://127.0.0.1:9444/api/v1/namespaces; }
+for _ in $(seq 60); do
+  [ "$(kubectl -n kube-system get pod "$mirror" -o jsonpath='{.metadata.annotations.e2e-run}' 2>/dev/null)" = "$run" ] &&
+    static "$alice" | grep -q NamespaceList && break
+  sleep 2
+done
+items() { python3 -c 'import json,sys; print(" ".join(i["metadata"]["name"] for i in json.load(sys.stdin).get("items", [])))'; }
+check "static pod: alice sees only dev-a" "$(static "$alice" | items)" "dev-a"
+check "static pod: alice watch filtered" "$(docker exec "$C-control-plane" curl -sk -m 3 -H "Authorization: Bearer $alice" 'https://127.0.0.1:9444/api/v1/namespaces?watch=1' |
+  python3 -c 'import json,sys; print(" ".join(json.loads(l)["object"]["metadata"]["name"] for l in sys.stdin if l.strip()))')" "dev-a"
+check "static pod: admin passthrough" "$(static "$admin" | items | wc -w | tr -d ' ')" "$(kubectl get ns -o name | grep -c .)"
+check "static pod: no ServiceAccount token mounted" "$(kubectl -n kube-system get pod "$mirror" -o jsonpath='{.spec.containers[0].volumeMounts[*].name}')" "certs"
+sleep 2
+check "static pod: lists namespaces as its cert CN" "$(docker exec "$C-control-plane" tail -n +"$((audit0 + 1))" /var/log/kubernetes/audit.log |
+  grep '"username":"orbitgate"' | grep -c '"resource":"namespaces"' | awk '{print ($1 > 0)}')" "1"
 exit $fail

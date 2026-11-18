@@ -39,6 +39,9 @@ var (
 	plainHTTP   = flag.Bool("plain-http", false, "serve plain HTTP (only behind a TLS-terminating LB/ingress)")
 	apiserver   = flag.String("apiserver", "https://kubernetes.default.svc", "kube-apiserver URL")
 	saDir       = flag.String("sa-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "dir with token + ca.crt")
+	apiCAFile   = flag.String("apiserver-ca", "", "CA bundle that signed the apiserver cert, reloaded on change (default: <sa-dir>/ca.crt)")
+	ownCert     = flag.String("client-cert", "", "own client cert for listing namespaces, instead of the ServiceAccount token (reloaded on change)")
+	ownKey      = flag.String("client-key", "", "key for -client-cert")
 	printVer    = flag.Bool("version", false, "print the version and exit")
 	tenantVerb  = flag.String("tenant-verb", "list", "tenant check: verb a user needs in a namespace to see it in the list")
 	tenantRes   = flag.String("tenant-resource", "pods", "tenant check: resource for -tenant-verb")
@@ -52,7 +55,8 @@ var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
 
 var (
 	apiURL *url.URL
-	client *http.Client
+	client *http.Client // carries only the user's credentials
+	own    *http.Client // Orbitgate's own client cert (-client-cert); nil = ServiceAccount token, see ownDo
 )
 
 func main() {
@@ -65,6 +69,9 @@ func main() {
 	if !*plainHTTP && (*tlsCert == "" || *tlsKey == "") {
 		log.Fatal("-tls-cert/-tls-key required (or -plain-http behind a TLS-terminating LB)")
 	}
+	if (*ownCert == "") != (*ownKey == "") {
+		log.Fatal("-client-cert and -client-key go together")
+	}
 
 	var err error
 	if apiURL, err = url.Parse(*apiserver); err != nil {
@@ -75,6 +82,11 @@ func main() {
 	}
 	transport := newTransport()
 	client = &http.Client{Transport: transport}
+	if *ownCert != "" {
+		if own, err = ownClient(transport); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
@@ -102,7 +114,7 @@ func main() {
 	// No ReadTimeout/WriteTimeout: they would cut watches, logs -f, exec and port-forward.
 	srv := &http.Server{Addr: *listen, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	if !*plainHTTP {
-		certs := &certReloader{}
+		certs := &certReloader{certFile: *tlsCert, keyFile: *tlsKey, metric: "orbitgate_tls_cert_expiry_timestamp_seconds"}
 		if _, err := certs.get(nil); err != nil {
 			log.Fatal(err)
 		}
@@ -185,29 +197,30 @@ func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 // subPath: subPath mounts never update.
 // ponytail: one stat per TLS handshake; fine at kubectl rates.
 type certReloader struct {
-	mu   sync.Mutex
-	mod  time.Time
-	cert *tls.Certificate
+	certFile, keyFile, metric string
+	mu                        sync.Mutex
+	mod                       time.Time
+	cert                      *tls.Certificate
 }
 
 func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st, err := os.Stat(*tlsCert)
+	st, err := os.Stat(c.certFile)
 	if err == nil && c.cert != nil && st.ModTime().Equal(c.mod) {
 		return c.cert, nil
 	}
 	if err == nil {
 		var cert tls.Certificate
-		if cert, err = tls.LoadX509KeyPair(*tlsCert, *tlsKey); err == nil {
+		if cert, err = tls.LoadX509KeyPair(c.certFile, c.keyFile); err == nil {
 			c.cert, c.mod = &cert, st.ModTime()
-			set("orbitgate_tls_cert_expiry_timestamp_seconds", float64(cert.Leaf.NotAfter.Unix()))
+			set(c.metric, float64(cert.Leaf.NotAfter.Unix()))
 			log.Printf("loaded TLS cert %q, expires %s", cert.Leaf.Subject.CommonName, cert.Leaf.NotAfter.Format(time.RFC3339))
 			return c.cert, nil
 		}
 	}
 	if c.cert != nil { // mid-rotation or transient: keep serving the last good cert
-		log.Printf("TLS reload failed, keeping current cert: %v", err)
+		log.Printf("TLS reload failed for %s, keeping current cert: %v", c.certFile, err)
 		return c.cert, nil
 	}
 	return nil, err
@@ -225,6 +238,27 @@ func newTransport() *http.Transport {
 	return t
 }
 
+// ownClient presents Orbitgate's client cert, on its own transport. Never on the one that
+// forwards user requests: the apiserver would authenticate those as Orbitgate (x509 wins over tokens).
+func ownClient(user *http.Transport) (*http.Client, error) {
+	certs := &certReloader{certFile: *ownCert, keyFile: *ownKey, metric: "orbitgate_client_cert_expiry_timestamp_seconds"}
+	if _, err := certs.get(nil); err != nil {
+		return nil, err
+	}
+	t := user.Clone() // idle conns close after 90s, so a renewed cert is used soon after the file changes
+	t.TLSClientConfig.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return certs.get(nil) }
+	return &http.Client{Transport: t}, nil
+}
+
+// ownDo sends req as Orbitgate itself: the client cert if set, else the ServiceAccount token.
+func ownDo(req *http.Request) (*http.Response, error) {
+	if own != nil {
+		return own.Do(req)
+	}
+	req.Header.Set("Authorization", "Bearer "+saToken())
+	return client.Do(req)
+}
+
 var apiCA = &caReloader{}
 
 // caReloader re-reads the apiserver CA (ca.crt) when it changes, so a cluster CA
@@ -238,7 +272,10 @@ type caReloader struct {
 func (c *caReloader) get() (*x509.CertPool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	f := *saDir + "/ca.crt"
+	f := *apiCAFile
+	if f == "" {
+		f = *saDir + "/ca.crt"
+	}
 	st, err := os.Stat(f)
 	if err == nil && c.pool != nil && st.ModTime().Equal(c.mod) {
 		return c.pool, nil
@@ -302,7 +339,7 @@ func userAuth(req *http.Request, from http.Header) {
 func isCred(k string) bool { return k == "Authorization" || strings.HasPrefix(k, "Impersonate-") }
 
 // listNamespaces first asks the apiserver as the user. Allowed (e.g. cluster-admin):
-// the real answer passes through untouched. Forbidden: list with the proxy SA and keep
+// the real answer passes through untouched. Forbidden: list as Orbitgate itself and keep
 // only namespaces where the user can list pods (asked as the user, via SelfSubjectAccessReview).
 func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	target := apiURL.JoinPath(r.URL.Path).String() + "?" + r.URL.RawQuery
@@ -327,8 +364,7 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	}
 	req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 	req.Header.Set("Accept", accept)
-	req.Header.Set("Authorization", "Bearer "+saToken())
-	if resp, err = client.Do(req); err != nil {
+	if resp, err = ownDo(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -389,7 +425,7 @@ func isWatch(q url.Values) bool {
 	return ok && len(v) > 0 && v[0] != "0" && !strings.EqualFold(v[0], "false")
 }
 
-// watchNamespaces streams the proxy SA's namespace watch, forwarding only events the user may see.
+// watchNamespaces streams Orbitgate's own namespace watch, forwarding only events the user may see.
 // Each event is checked when it arrives (SSARs cached, see ssarTTL), so RBAC changes apply mid-watch.
 func watchNamespaces(w http.ResponseWriter, r *http.Request, resp *http.Response) {
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
@@ -629,8 +665,7 @@ func metricsMux() *http.ServeMux {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, apiURL.JoinPath("/readyz").String(), nil)
-		req.Header.Set("Authorization", "Bearer "+saToken())
-		resp, err := client.Do(req)
+		resp, err := ownDo(req)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {

@@ -25,3 +25,5 @@ annotations:
   artifacthub.io/links: |
     - name: TLS and certificate guide
       url: https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/TLS.md
+    - name: Static pod on Talos (no ServiceAccount)
+      url: https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/static-pod.md

@@ -19,7 +19,7 @@ Only the latest release gets security fixes while Orbitgate is pre-1.0.
 
 Especially interesting:
 - a tenant learning namespace names they have no access to;
-- Orbitgate's ServiceAccount rights being usable by a caller;
+- Orbitgate's own credentials (ServiceAccount token or client cert) being usable by a caller;
 - credentials leaking (logs, other users, upstream).
 
 Out of scope: misconfigured RBAC in your cluster, and issues in the kube-apiserver itself (report those to [Kubernetes](https://kubernetes.io/docs/reference/issues-security/security/)).

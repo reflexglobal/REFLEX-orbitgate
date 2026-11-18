@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -172,8 +173,7 @@ func writeCert(t *testing.T, dir, cn string, mod time.Time) {
 
 func TestCertReload(t *testing.T) {
 	dir := t.TempDir()
-	*tlsCert, *tlsKey = dir+"/tls.crt", dir+"/tls.key"
-	c := &certReloader{}
+	c := &certReloader{certFile: dir + "/tls.crt", keyFile: dir + "/tls.key", metric: "test_expiry"}
 	cn := func() string {
 		cert, err := c.get(nil)
 		if err != nil {
@@ -276,5 +276,68 @@ func TestParseRequestAndWhoami(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("SelfSubjectReview not cached: %d calls", calls.Load())
+	}
+}
+
+// With -client-cert, Orbitgate lists namespaces as that cert's CN, and user requests must
+// never carry it: the apiserver would authenticate them as Orbitgate instead of the user.
+func TestClientCertCredential(t *testing.T) {
+	api := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		cn := ""
+		if len(r.TLS.PeerCertificates) > 0 {
+			cn = r.TLS.PeerCertificates[0].Subject.CommonName
+		}
+		switch {
+		case cn != "" && tok != "":
+			t.Errorf("%s %s: token %q sent together with client cert %q", r.Method, r.URL.Path, tok, cn)
+			w.WriteHeader(http.StatusBadRequest)
+		case r.URL.Path == "/api/v1/namespaces" && cn == "orbitgate":
+			io.WriteString(w, `{"kind":"NamespaceList","metadata":{},"items":[{"metadata":{"name":"dev-a"}},{"metadata":{"name":"dev-b"}}]}`)
+		case r.URL.Path == "/api/v1/namespaces" && tok == "carol":
+			w.WriteHeader(http.StatusForbidden)
+		case strings.HasSuffix(r.URL.Path, "selfsubjectaccessreviews") && tok == "carol":
+			b, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"status":{"allowed":`+map[bool]string{true: "true", false: "false"}[strings.Contains(string(b), `"dev-a"`)]+`}}`)
+		case r.URL.Path == "/readyz" && cn == "orbitgate":
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	api.TLS = &tls.Config{ClientAuth: tls.RequestClientCert}
+	api.StartTLS()
+	defer api.Close()
+
+	dir := t.TempDir()
+	writeCert(t, dir, "orbitgate", time.Now())
+	*ownCert, *ownKey = dir+"/tls.crt", dir+"/tls.key"
+	*saDir = t.TempDir() // no SA token: the cert alone must do
+	apiURL, _ = url.Parse(api.URL)
+	client = api.Client()
+	var err error
+	if own, err = ownClient(client.Transport.(*http.Transport)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { own, *ownCert, *ownKey = nil, "", "" })
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces", nil)
+	r.Header.Set("Authorization", "Bearer carol")
+	w := httptest.NewRecorder()
+	listNamespaces(w, r)
+	var body map[string]any
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if ns := names(body); w.Code != 200 || len(ns) != 1 || ns[0] != "dev-a" {
+		t.Fatalf("carol: %d %v %s", w.Code, ns, w.Body)
+	}
+	w = httptest.NewRecorder()
+	metricsMux().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != 200 {
+		t.Fatalf("readyz with client cert: %d %s", w.Code, w.Body)
+	}
+
+	*ownKey = dir + "/missing.key"
+	if _, err := ownClient(client.Transport.(*http.Transport)); err == nil {
+		t.Fatal("unreadable client key accepted")
 	}
 }

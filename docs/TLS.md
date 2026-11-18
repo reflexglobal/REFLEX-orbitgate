@@ -7,7 +7,7 @@ There are two TLS legs:
 | leg | who handles it | your job |
 |---|---|---|
 | kubectl → Orbitgate | Orbitgate's cert in secret `orbitgate-tls` | **this document** |
-| Orbitgate → apiserver | the pod's ServiceAccount CA (`ca.crt`), automatic | nothing. After a *cluster* CA rotation Orbitgate picks up the new `ca.crt` automatically, no restart. |
+| Orbitgate → apiserver | the pod's ServiceAccount CA (`ca.crt`), automatic; or `-apiserver-ca` (static pods) | nothing. After a *cluster* CA rotation Orbitgate picks up the new CA file automatically, no restart. |
 
 ## Ground rules
 

@@ -50,6 +50,12 @@ check "bob sees only dev-b" "$(nss "$bob")" "namespace/dev-b"
 check "admin sees all" "$(og "$admin" get ns -o name | grep -c .)" "$(kubectl get ns -o name | grep -c .)"
 check "alice json list" "$(og "$alice" get ns -o jsonpath='{.items[*].metadata.name}')" "dev-a"
 check "alice can create in dev-a" "$(og "$alice" -n dev-a create configmap e2e --dry-run=server -o name 2>&1)" "configmap/e2e"
+check "alice can create deployment" "$(og "$alice" -n dev-a create deployment e2e --image=busybox:1.36 --dry-run=server -o name 2>&1)" "deployment.apps/e2e"
+og "$alice" -n dev-a delete pod e2e --ignore-not-found >/dev/null
+og "$alice" -n dev-a run e2e --image=busybox:1.36 --restart=Never --command -- sh -c 'echo hello-log; sleep 3600' >/dev/null
+og "$alice" -n dev-a wait --for=condition=Ready pod/e2e --timeout=120s >/dev/null
+check "alice logs (through proxy)" "$(og "$alice" -n dev-a logs e2e)" "hello-log"
+check "alice exec (upgrade through proxy)" "$(og "$alice" -n dev-a exec e2e -- echo hi 2>&1)" "hi"
 check "alice denied dev-b" "$(og "$alice" -n dev-b get pods 2>&1 | grep -c Forbidden)" "1"
 check "alice --as admin ignored" "$(og "$alice" --as=oidc:admin@airlock.test -n dev-b get pods 2>&1 | grep -c Forbidden)" "1"
 check "bad token rejected" "$(og garbage get ns 2>&1 | grep -c "provide credentials")" "1"

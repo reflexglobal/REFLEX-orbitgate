@@ -14,6 +14,28 @@ It runs next to the real apiserver as a Deployment exposed with a NodePort or Lo
 kubectl --(OIDC id_token)--> orbitgate --(SA token + Impersonate-User/Group)--> kube-apiserver
 ```
 
+Only the namespace list is filtered. Every other request (Deployments, StatefulSets, CRDs, Helm, logs, exec, port-forward) goes to the apiserver unchanged, as the user, and RBAC decides. A tenant is anyone who can `list pods` in a namespace (`view`, `edit` and `admin` all grant that). A custom role without pods won't show up in `get ns`, though it still works when the namespace is given explicitly (`-n`).
+
+## Requirements
+
+**Cluster:** any Kubernetes with RBAC; no apiserver flags or restarts. Also needed:
+- the image in a registry the cluster can pull from;
+- a TLS cert in secret `orbitgate-tls` whose CA users trust;
+- a NodePort or LoadBalancer;
+- admin rights once, to apply `deploy/orbitgate.yaml`.
+
+**OIDC provider** (Keycloak, Dex, Okta, Entra, ...):
+- reachable from the cluster, so Orbitgate can fetch its signing keys, and from users' machines, so they can log in;
+- a client whose ID token has a username claim (`email` by default) and optionally a `groups` claim.
+
+**Tenants:** a namespace plus a RoleBinding for `oidc:<user>` or `oidc:<group>`.
+
+**Users:** `kubectl` + [kubelogin](https://github.com/int128/kubelogin) and a kubeconfig pointing at Orbitgate (see below).
+
+**Build:** Go 1.26 or Docker.
+
+**Test env:** Docker, kind, kubectl, openssl, curl, python3, and internet access to pull the kind, Dex and base images.
+
 ## Deploy
 
 1. Mirror the image into your airgapped registry: `docker build -t <registry>/reflex/orbitgate:<tag> .`

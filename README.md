@@ -80,6 +80,13 @@ The client IP comes from `X-Forwarded-For`, which Orbitgate sets itself (any cli
 
 Orbitgate itself knows nothing about OIDC, so any provider the apiserver supports works (Keycloak, Dex, Okta, Entra, ...). **Client-certificate users can't go through a TLS-terminating proxy**; they keep using the apiserver directly, which is usually only break-glass admins.
 
+**Client certificates don't work through Orbitgate.** Orbitgate terminates TLS, so a client certificate never reaches the apiserver, and the request arrives without credentials. kubectl then reports `error: You must be logged in to the server (Unauthorized)` (or `Forbidden ... system:anonymous` if anonymous auth is on). Certificate users, usually break-glass admins such as the kubeadm `admin.conf`, keep a context that points straight at the apiserver:
+
+```sh
+kubectl config set-context breakglass --cluster=<apiserver-cluster> --user=<cert-user>   # server: https://<apiserver>:6443
+kubectl --context=breakglass get ns
+```
+
 **Tenants:** a namespace plus a RoleBinding granting `view`, `edit` or `admin` (or any role with `list pods`).
 
 **Build:** Go 1.26 or Docker. **Test env:** Docker, kind, kubectl, helm, openssl, python3, and internet access to pull images.

@@ -120,6 +120,10 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | `tls.certManager.issuerRef` | ClusterIssuer `airlock-ca` | existing (Cluster)Issuer, used when `caSecretName` is empty |
 | `tls.certManager.dnsNames` / `ipAddresses` | | every name/IP users connect to |
 | `extraArgs` | `[]` | e.g. `-plain-http` behind a TLS-terminating LB |
+| `podDisruptionBudget.enabled` / `.minAvailable` | true / 1 | Deployment with `replicas` > 1 only |
+| `topologySpreadConstraints` | `[]` | Deployment only |
+| `priorityClassName` | | e.g. `system-cluster-critical` for the DaemonSet |
+| `podAnnotations` / `podLabels` | `{}` | |
 
 ## User kubeconfig
 

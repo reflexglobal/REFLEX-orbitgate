@@ -1,0 +1,13 @@
+{{- with .Values.podDisruptionBudget }}
+{{- if and .enabled (eq $.Values.kind "Deployment") (gt (int $.Values.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  minAvailable: {{ .minAvailable }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ $.Release.Name }}}
+{{- end }}
+{{- end }}

@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-go@v6
         with: {go-version-file: go.mod, cache: false}  # no deps, nothing to cache
       - run: go vet ./... && go test ./...
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - run: helm lint charts/orbitgate
 
   e2e:
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: helm/kind-action@v1
         with: {install_only: true}
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - run: ./test/kind.sh
 
   # Tag vX.Y.Z -> image ghcr.io/reflexglobal/orbitgate:X.Y.Z + chart oci://ghcr.io/reflexglobal/charts/orbitgate X.Y.Z
@@ -68,7 +68,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/reflexglobal/orbitgate:${{ env.VERSION }}
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - uses: sigstore/cosign-installer@v3
       - uses: oras-project/setup-oras@v2
       - name: Prepare chart for ArtifactHub

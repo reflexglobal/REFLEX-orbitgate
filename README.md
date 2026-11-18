@@ -117,9 +117,18 @@ Push a tag `vX.Y.Z` and CI tests, then publishes:
 
 Each release also signs the image and chart with cosign (keyless) and publishes ArtifactHub metadata.
 
-**Release checklist**
-1. Replace `artifacthub.io/changes` in `charts/orbitgate/Chart.yaml` with this version's entries. This is the changelog shown on ArtifactHub.
-2. Commit, then `git tag vX.Y.Z && git push --tags`.
+**Commits** follow [Conventional Commits](https://www.conventionalcommits.org) (`type(scope)!: subject`), and CI rejects anything else. The ArtifactHub changelog is generated from them at release time:
+
+| commit | changelog |
+|---|---|
+| `feat: ...` | added |
+| `fix: ...` | fixed |
+| `fix(security): ...` | security |
+| `perf: ...` / `refactor: ...` | changed |
+| `type!: ...` | marked BREAKING |
+| `docs`, `chore`, `ci`, `test`, `build`, `style` | not listed |
+
+**Release:** `git tag vX.Y.Z && git push --tags`. Pick the version per [semver](https://semver.org): a `!` means a major bump (minor while on 0.x), `feat` a minor bump, `fix` a patch.
 
 ArtifactHub (repo `orbitgate`, `oci://ghcr.io/reflexglobal/charts/orbitgate`) can only read the chart while the GHCR packages are **public**. The icon (`docs/icon.png`) shows once the GitHub repo is public too.
 
@@ -131,3 +140,7 @@ go test ./...
 ```
 
 The e2e checks tenant isolation, admin passthrough, logs and exec through the proxy, audit identity, and cert rotation from an in-cluster CA without restarts.
+
+## License
+
+[MIT](LICENSE)

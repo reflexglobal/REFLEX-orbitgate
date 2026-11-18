@@ -8,12 +8,28 @@ permissions:
   contents: read
 
 jobs:
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - name: Conventional Commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then .github/commits.sh "$PR_RANGE"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then .github/commits.sh "$BEFORE..$SHA"
+          fi  # tag pushes: those commits were already checked on main
+
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version-file: go.mod}
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version-file: go.mod, cache: false}  # no deps, nothing to cache
       - run: go vet ./... && go test ./...
       - uses: azure/setup-helm@v4
       - run: helm lint charts/orbitgate
@@ -21,7 +37,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: helm/kind-action@v1
         with: {install_only: true}
       - uses: azure/setup-helm@v4
@@ -30,14 +46,15 @@ jobs:
   # Tag vX.Y.Z -> image ghcr.io/reflexglobal/orbitgate:X.Y.Z + chart oci://ghcr.io/reflexglobal/charts/orbitgate X.Y.Z
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, e2e]
+    needs: [commits, test, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
       id-token: write  # keyless cosign signing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}  # tags + history for the changelog
       - run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -57,6 +74,9 @@ jobs:
       - name: Prepare chart for ArtifactHub
         run: |
           sed -i "s#ghcr.io/reflexglobal/orbitgate:[0-9A-Za-z.-]*#ghcr.io/reflexglobal/orbitgate:$VERSION#" charts/orbitgate/Chart.yaml
+          # Changelog from Conventional Commits since the previous tag
+          CHANGES="$(.github/changes.sh)" yq -i '.annotations["artifacthub.io/changes"] = strenv(CHANGES)' charts/orbitgate/Chart.yaml
+          yq '.annotations["artifacthub.io/changes"]' charts/orbitgate/Chart.yaml
           # Chart README = repo README, with links made absolute so they work on artifacthub.io
           sed 's#](docs/#](https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/#g' README.md > charts/orbitgate/README.md
       - name: Push chart

@@ -14,20 +14,9 @@ maintainers:
     url: https://github.com/reflexglobal
 annotations:
   artifacthub.io/category: security
+  artifacthub.io/license: MIT
   artifacthub.io/prerelease: "true"  # drop at 1.0.0
-  # Release checklist: replace "changes" with this version's entries, then tag vX.Y.Z.
-  # kinds: added, changed, deprecated, removed, fixed, security
-  artifacthub.io/changes: |
-    - kind: added
-      description: Pass-through kube-apiserver proxy; kubectl get ns only shows namespaces the user can access
-    - kind: added
-      description: Credentials forwarded untouched, so apiserver authn, RBAC and audit apply as-is
-    - kind: added
-      description: TLS cert hot reload, cert-manager renewals need no restart
-    - kind: added
-      description: cert-manager support via an existing CA secret or Issuer/ClusterIssuer
-    - kind: added
-      description: Run as a Deployment, or as a DaemonSet on control-plane nodes with optional hostNetwork
+  # artifacthub.io/changes is generated at release from Conventional Commits (.github/changes.sh).
   # Image tag is rewritten to the release version by CI; ArtifactHub security-scans it.
   artifacthub.io/images: |
     - name: orbitgate

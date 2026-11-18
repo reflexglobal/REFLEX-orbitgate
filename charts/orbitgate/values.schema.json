@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {"type": "array"},
+    "replicas": {"type": "integer", "minimum": 0},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "port": {"type": "integer"},
+        "nodePort": {"type": ["integer", "null", "string"]},
+        "annotations": {"type": "object"}
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "secretName": {"type": "string", "minLength": 1},
+        "certManager": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "caSecretName": {"type": "string"},
+            "issuerRef": {
+              "type": "object",
+              "properties": {"kind": {"enum": ["Issuer", "ClusterIssuer"]}, "name": {"type": "string"}, "group": {"type": "string"}},
+              "required": ["kind", "name"]
+            },
+            "duration": {"type": "string"},
+            "renewBefore": {"type": "string"},
+            "dnsNames": {"type": "array", "items": {"type": "string"}},
+            "ipAddresses": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "extraArgs": {"type": "array", "items": {"type": "string"}},
+    "resources": {"type": "object"},
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array"}
+  }
+}

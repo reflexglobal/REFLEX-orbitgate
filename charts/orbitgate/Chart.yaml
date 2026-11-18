@@ -4,9 +4,33 @@ description: Pass-through kube-apiserver proxy that only shows tenants their own
 type: application
 version: 0.1.0      # set from the git tag by CI
 appVersion: "0.1.0" # set from the git tag by CI
+kubeVersion: ">=1.25.0-0"
+icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/logo.svg
 home: https://github.com/reflexglobal/REFLEX-orbitgate
 sources: [https://github.com/reflexglobal/REFLEX-orbitgate]
-keywords: [kubernetes, rbac, multi-tenancy, proxy, airgap]
+keywords: [kubernetes, rbac, multi-tenancy, namespaces, proxy, airgap, airlock]
+maintainers:
+  - name: Reflex
+    url: https://github.com/reflexglobal
 annotations:
   artifacthub.io/category: security
-  artifacthub.io/prerelease: "true"
+  artifacthub.io/prerelease: "true"  # drop at 1.0.0
+  # Release checklist: replace "changes" with this version's entries, then tag vX.Y.Z.
+  # kinds: added, changed, deprecated, removed, fixed, security
+  artifacthub.io/changes: |
+    - kind: added
+      description: Pass-through kube-apiserver proxy; kubectl get ns only shows namespaces the user can access
+    - kind: added
+      description: Credentials forwarded untouched, so apiserver authn, RBAC and audit apply as-is
+    - kind: added
+      description: TLS cert hot reload, cert-manager renewals need no restart
+    - kind: added
+      description: cert-manager support via an existing CA secret or Issuer/ClusterIssuer
+  # Image tag is rewritten to the release version by CI; ArtifactHub security-scans it.
+  artifacthub.io/images: |
+    - name: orbitgate
+      image: ghcr.io/reflexglobal/orbitgate:0.1.0
+      platforms: [linux/amd64, linux/arm64]
+  artifacthub.io/links: |
+    - name: TLS and certificate guide
+      url: https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/TLS.md

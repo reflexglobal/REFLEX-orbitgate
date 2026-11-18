@@ -35,6 +35,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write  # keyless cosign signing
     steps:
       - uses: actions/checkout@v4
       - run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
@@ -45,23 +46,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
+        id: image
         with:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/reflexglobal/orbitgate:${{ env.VERSION }}
       - uses: azure/setup-helm@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: oras-project/setup-oras@v1
+      - name: Prepare chart for ArtifactHub
+        run: |
+          sed -i "s#ghcr.io/reflexglobal/orbitgate:[0-9A-Za-z.-]*#ghcr.io/reflexglobal/orbitgate:$VERSION#" charts/orbitgate/Chart.yaml
+          # Chart README = repo README, with links made absolute so they work on artifacthub.io
+          sed 's#](docs/#](https://github.com/reflexglobal/REFLEX-orbitgate/blob/main/docs/#g' README.md > charts/orbitgate/README.md
       - name: Push chart
         run: |
           helm package charts/orbitgate --version "$VERSION" --app-version "$VERSION"
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm push "orbitgate-$VERSION.tgz" oci://ghcr.io/reflexglobal/charts
+          helm push "orbitgate-$VERSION.tgz" oci://ghcr.io/reflexglobal/charts 2>&1 | tee push.log
+          echo "CHART_DIGEST=$(awk '/^Digest:/{print $2}' push.log)" >> "$GITHUB_ENV"
+      - name: Sign image and chart (ArtifactHub "Signed" badge)
+        run: |
+          cosign sign --yes "ghcr.io/reflexglobal/orbitgate@${{ steps.image.outputs.digest }}"
+          cosign sign --yes "ghcr.io/reflexglobal/charts/orbitgate@$CHART_DIGEST"
+      - name: ArtifactHub repository metadata (Verified publisher)
+        run: |
+          oras login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          oras push ghcr.io/reflexglobal/charts/orbitgate:artifacthub.io \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            charts/orbitgate/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
       - name: GitHub release (chart tgz attached for airgapped transfer)
         env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
         run: gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes
-      # ArtifactHub: only once the repo + GHCR packages are public. Fill in artifacthub-repo.yml, then uncomment.
-      # - uses: oras-project/setup-oras@v1
-      # - run: |
-      #     oras login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-      #     oras push ghcr.io/reflexglobal/charts/orbitgate:artifacthub.io \
-      #       --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
-      #       charts/orbitgate/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml

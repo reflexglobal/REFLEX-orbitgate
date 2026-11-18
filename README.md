@@ -1,4 +1,8 @@
+<img src="docs/logo.svg" width="96" align="right" alt="Orbitgate logo">
+
 # Orbitgate
+
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/orbitgate)](https://artifacthub.io/packages/search?repo=orbitgate)
 
 Part of **Airlock**, Reflex's toolkit for airgapped Kubernetes deployments and defense clusters.
 
@@ -106,7 +110,13 @@ Push a tag `vX.Y.Z` and CI tests, then publishes:
 - the chart `oci://ghcr.io/reflexglobal/charts/orbitgate` version `X.Y.Z` (chart version = app version);
 - a GitHub release with the chart `.tgz`.
 
-ArtifactHub needs a public repo and public packages. Once that's the case, fill in `charts/orbitgate/artifacthub-repo.yml`, add the repo on artifacthub.io and uncomment the oras step in `.github/workflows/ci.yml`.
+Each release also signs the image and chart with cosign (keyless) and publishes ArtifactHub metadata.
+
+**Release checklist**
+1. Replace `artifacthub.io/changes` in `charts/orbitgate/Chart.yaml` with this version's entries. This is the changelog shown on ArtifactHub.
+2. Commit, then `git tag vX.Y.Z && git push --tags`.
+
+ArtifactHub (repo `orbitgate`, `oci://ghcr.io/reflexglobal/charts/orbitgate`) can only read the chart while the GHCR packages are **public**. The logo (`docs/logo.svg`) shows once the GitHub repo is public too.
 
 ## Develop
 

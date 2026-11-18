@@ -1,3 +1,2 @@
-# Pushed next to the OCI chart (tag "artifacthub.io") by the release workflow once the repo is public.
-repositoryID: ""  # fill in after adding the repo on artifacthub.io
-owners: []
+# Pushed next to the OCI chart (tag "artifacthub.io") by the release workflow: gives the Verified publisher badge.
+repositoryID: ab22114c-e3ee-4aab-adbf-b36393a0c838

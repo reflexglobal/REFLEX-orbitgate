@@ -34,6 +34,18 @@ service:
   nodePort: 30443 # NodePort only; empty = random
   annotations: {}
 
+# Opt-in NetworkPolicy: ingress only on listenPort, egress only to the apiserver and DNS (kube-system).
+# No effect with hostNetwork (DaemonSet mode): NetworkPolicies don't apply to host-network pods.
+networkPolicy:
+  enabled: false
+  ingressFrom: []  # NetworkPolicy peers that may connect; empty = anyone. e.g. [{ipBlock: {cidr: 10.0.0.0/8}}]
+  metricsFrom: []  # same, for the metrics port (Prometheus)
+  apiserver:
+    # Apiserver endpoint IPs/CIDRs (kubectl get endpointslices -l kubernetes.io/service-name=kubernetes).
+    # Empty = any IP, but only on these ports.
+    cidrs: []
+    ports: [443, 6443]
+
 tls:
   # Secret with tls.crt/tls.key. Orbitgate reloads it on change, no restart needed.
   # Bring your own (kubectl create secret tls ...) or let cert-manager create it below.

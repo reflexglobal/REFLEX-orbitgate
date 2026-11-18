@@ -106,6 +106,7 @@ Airgapped: `helm pull oci://ghcr.io/reflexglobal/charts/orbitgate --version X.Y.
 | `daemonSet.affinity` / `.tolerations` | control-plane nodes (kubeadm, RKE2, k3s) | DaemonSet scheduling |
 | `nodeSelector` / `affinity` / `tolerations` | | Deployment scheduling (`nodeSelector` applies to both) |
 | `service.type` / `service.nodePort` | `NodePort` / 30443 | or `LoadBalancer`; `ClusterIP` is enough with `hostNetwork` |
+| `networkPolicy.enabled` | false | ingress only on `listenPort` (from `networkPolicy.ingressFrom`, empty = anyone), egress only to the apiserver (`networkPolicy.apiserver.cidrs`/`.ports`) and DNS. No effect with `hostNetwork` |
 | `tls.secretName` | `orbitgate-tls` | bring your own, or let cert-manager create it |
 | `tls.certManager.enabled` | false | see [docs/TLS.md](docs/TLS.md) |
 | `tls.certManager.caSecretName` | | existing CA secret in the release namespace; the chart makes an Issuer |

@@ -1,0 +1,40 @@
+{{- with .Values.networkPolicy }}
+{{- if .enabled }}
+# Has no effect on hostNetwork pods (DaemonSet + hostNetwork): NetworkPolicies don't apply to the host network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: orbitgate, app.kubernetes.io/instance: {{ $.Release.Name }}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{port: https, protocol: TCP}]
+      {{- with .ingressFrom }}
+      from: {{ toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if $.Values.metricsPort }}
+    - ports: [{port: metrics, protocol: TCP}]
+      {{- with .metricsFrom }}
+      from: {{ toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  egress:
+    - ports:  # the apiserver, after kubernetes.default.svc is DNATed to its endpoints
+        {{- range .apiserver.ports }}
+        - {port: {{ . }}, protocol: TCP}
+        {{- end }}
+      {{- with .apiserver.cidrs }}
+      to:
+        {{- range . }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      {{- end }}
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+{{- end }}
+{{- end }}

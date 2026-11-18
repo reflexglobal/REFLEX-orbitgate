@@ -115,6 +115,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/reflexglobal/orbitgate:${{ env.VERSION }}
+          build-args: VERSION=${{ env.VERSION }}
       - uses: azure/setup-helm@v5
       - uses: sigstore/cosign-installer@v3
       - uses: oras-project/setup-oras@v2

@@ -2,7 +2,10 @@
 
 # Orbitgate
 
+[![Release](https://img.shields.io/github/v/release/reflexglobal/REFLEX-orbitgate?include_prereleases&sort=semver&label=version)](https://github.com/reflexglobal/REFLEX-orbitgate/releases)
+[![Chart](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Freflexglobal%2FREFLEX-orbitgate%2Fmain%2Fcharts%2Forbitgate%2FChart.yaml&query=%24.version&label=helm%20chart&prefix=v)](charts/orbitgate)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/orbitgate)](https://artifacthub.io/packages/search?repo=orbitgate)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Part of **Airlock**, Reflex's toolkit for airgapped Kubernetes deployments and defense clusters.
 
@@ -17,6 +20,27 @@ Everything else is the apiserver's job, unchanged:
 ```
 kubectl --(user's own token)--> orbitgate --(same token, untouched)--> kube-apiserver
 ```
+
+## Why Orbitgate
+
+**The gap in Kubernetes.** RBAC decides *whether* you may list a resource, not *which items* you get back. For namespaces that leaves two bad options:
+
+- **Grant cluster-wide `list namespaces`:** every tenant sees every other tenant's namespace names. Those names tend to leak customer names, project codenames and environments, which is a real problem in shared, regulated or defense clusters.
+- **Don't grant it:** `kubectl get ns` is Forbidden. Developers can't discover their own namespaces, and tools that start from a namespace list (dashboards, IDE plugins, k9s) break or have to be fed names by hand.
+
+**What exists already is heavy.** OpenShift projects, Rancher projects, Capsule + capsule-proxy and vcluster all solve this, but they bring a platform, CRDs or a tenancy model along. Older auth proxies like kube-oidc-proxy (archived) authenticate but don't filter.
+
+**What Orbitgate gives you:**
+
+| | |
+|---|---|
+| **Tenant separation** | Teams only see their own namespaces; cluster admins see everything. |
+| **Nothing to migrate** | Works with your existing RoleBindings. No CRDs, no tenant objects, no apiserver flags or restarts. |
+| **Apiserver stays the authority** | Credentials pass through untouched, so authn, RBAC, admission and audit behave exactly as on direct access. Audit logs show the real user. |
+| **Tiny attack surface** | One static binary, no dependencies beyond the Go standard library, distroless image, only `list namespaces` RBAC, no impersonation rights. Fails closed. |
+| **Airgap-friendly** | No external calls; mirror one image and one chart. TLS from your own CA, with hot reload so renewals never need a restart. |
+| **Fits your topology** | Normal pods behind a NodePort/LoadBalancer, or a DaemonSet on the control planes right next to the apiserver. Admins can always bypass it. |
+| **Any identity provider** | Whatever the apiserver accepts (OIDC via Keycloak, Dex, Okta, Entra; ServiceAccount tokens; webhook auth). |
 
 ## How the namespace list works
 
@@ -128,7 +152,7 @@ Each release also signs the image and chart with cosign (keyless) and publishes 
 | `type!: ...` | marked BREAKING |
 | `docs`, `chore`, `ci`, `test`, `build`, `style` | not listed |
 
-**Release:** `git tag vX.Y.Z && git push --tags`. Pick the version per [semver](https://semver.org): a `!` means a major bump (minor while on 0.x), `feat` a minor bump, `fix` a patch.
+**Release:** `git tag vX.Y.Z && git push --tags` (pre-releases: `vX.Y.Z-alpha`, `-beta.1`, `-rc.1`; marked as pre-release on GitHub and ArtifactHub). Pick the version per [semver](https://semver.org): a `!` means a major bump (minor while on 0.x), `feat` a minor bump, `fix` a patch.
 
 ArtifactHub (repo `orbitgate`, `oci://ghcr.io/reflexglobal/charts/orbitgate`) can only read the chart while the GHCR packages are **public**. The icon (`docs/icon.png`) shows once the GitHub repo is public too.
 
@@ -143,4 +167,4 @@ The e2e checks tenant isolation, admin passthrough, logs and exec through the pr
 
 ## License
 
-[MIT](LICENSE)
+Copyright © 2026 Reflex. Orbitgate is free and open source software under the [MIT License](LICENSE).

@@ -2,8 +2,8 @@ apiVersion: v2
 name: orbitgate
 description: Pass-through kube-apiserver proxy that only shows tenants their own namespaces. Part of Reflex Airlock.
 type: application
-version: 0.1.0      # set from the git tag by CI
-appVersion: "0.1.0" # set from the git tag by CI
+version: 0.0.1-alpha      # set from the git tag by CI
+appVersion: "0.0.1-alpha" # set from the git tag by CI
 kubeVersion: ">=1.25.0-0"
 icon: https://raw.githubusercontent.com/reflexglobal/REFLEX-orbitgate/main/docs/icon.png
 home: https://github.com/reflexglobal/REFLEX-orbitgate
@@ -15,12 +15,12 @@ maintainers:
 annotations:
   artifacthub.io/category: security
   artifacthub.io/license: MIT
-  artifacthub.io/prerelease: "true"  # drop at 1.0.0
+  artifacthub.io/prerelease: "true"  # CI sets this from the tag (true for -alpha/-beta/-rc)
   # artifacthub.io/changes is generated at release from Conventional Commits (.github/changes.sh).
   # Image tag is rewritten to the release version by CI; ArtifactHub security-scans it.
   artifacthub.io/images: |
     - name: orbitgate
-      image: ghcr.io/reflexglobal/orbitgate:0.1.0
+      image: ghcr.io/reflexglobal/orbitgate:0.0.1-alpha
       platforms: [linux/amd64, linux/arm64]
   artifacthub.io/links: |
     - name: TLS and certificate guide

@@ -74,6 +74,9 @@ jobs:
       - name: Prepare chart for ArtifactHub
         run: |
           sed -i "s#ghcr.io/reflexglobal/orbitgate:[0-9A-Za-z.-]*#ghcr.io/reflexglobal/orbitgate:$VERSION#" charts/orbitgate/Chart.yaml
+          case "$VERSION" in *-*) PRE=true ;; *) PRE=false ;; esac
+          echo "PRERELEASE=$PRE" >> "$GITHUB_ENV"
+          PRE=$PRE yq -i '.annotations["artifacthub.io/prerelease"] = strenv(PRE)' charts/orbitgate/Chart.yaml
           # Changelog from Conventional Commits since the previous tag
           CHANGES="$(.github/changes.sh)" yq -i '.annotations["artifacthub.io/changes"] = strenv(CHANGES)' charts/orbitgate/Chart.yaml
           yq '.annotations["artifacthub.io/changes"]' charts/orbitgate/Chart.yaml
@@ -97,4 +100,4 @@ jobs:
             charts/orbitgate/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
       - name: GitHub release (chart tgz attached for airgapped transfer)
         env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
-        run: gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes --prerelease="$PRERELEASE"

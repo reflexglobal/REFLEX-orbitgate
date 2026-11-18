@@ -12,7 +12,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
-    verbs: [list]
+    verbs: [list, watch]  # watch: filtered namespace watches for tenants
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -1,0 +1,44 @@
+# Test-only OIDC issuer. Users: admin@airlock.test, alice@airlock.test, bob@airlock.test (password: "password").
+apiVersion: v1
+kind: Namespace
+metadata: {name: dex}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: dex, namespace: dex}
+data:
+  config.yaml: |
+    issuer: http://dex.dex.svc:5556/dex
+    storage: {type: memory}
+    web: {http: 0.0.0.0:5556}
+    oauth2: {passwordConnector: local, skipApprovalScreen: true}
+    enablePasswordDB: true
+    staticClients:
+      - {id: orbitgate, secret: test-secret, name: orbitgate, redirectURIs: ["http://localhost:8000"]}
+    staticPasswords:
+      - {email: admin@airlock.test, username: admin, userID: "1", hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"}
+      - {email: alice@airlock.test, username: alice, userID: "2", hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"}
+      - {email: bob@airlock.test, username: bob, userID: "3", hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: dex, namespace: dex}
+spec:
+  selector: {matchLabels: {app: dex}}
+  template:
+    metadata: {labels: {app: dex}}
+    spec:
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.41.1
+          args: [dex, serve, /etc/dex/config.yaml]
+          ports: [{containerPort: 5556}]
+          volumeMounts: [{name: config, mountPath: /etc/dex}]
+      volumes: [{name: config, configMap: {name: dex}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dex, namespace: dex}
+spec:
+  selector: {app: dex}
+  ports: [{port: 5556}]

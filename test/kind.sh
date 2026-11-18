@@ -50,10 +50,18 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2' 
 nss() { og "$1" get ns -o name | tr '\n' ' ' | sed 's/ $//'; }
 
 admin=$(token admin); alice=$(token alice); bob=$(token bob)
+pod=$(kubectl -n orbitgate get pods -o jsonpath='{.items[0].metadata.name}')
+check "metrics: cert expiry exported" "$(kubectl get --raw "/api/v1/namespaces/orbitgate/pods/$pod:9090/proxy/metrics" | grep -c '^orbitgate_tls_cert_expiry_timestamp_seconds ')" "1"
 check "alice sees only dev-a" "$(nss "$alice")" "namespace/dev-a"
 check "bob sees only dev-b" "$(nss "$bob")" "namespace/dev-b"
 check "admin sees all (passthrough)" "$(og "$admin" get ns -o name | grep -c .)" "$(kubectl get ns -o name | grep -c .)"
 check "alice json list" "$(og "$alice" get ns -o jsonpath='{.items[*].metadata.name}')" "dev-a"
+og "$alice" get ns --watch-only -o name --request-timeout=10s >"$tmp/watch" 2>/dev/null & wpid=$!
+sleep 3
+kubectl create ns dev-c --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+for ns in dev-a dev-b dev-c; do kubectl label ns "$ns" e2e-watch="$RANDOM" --overwrite >/dev/null; done
+wait "$wpid" || true
+check "alice watch sees only dev-a" "$(sort -u "$tmp/watch")" "namespace/dev-a"
 check "alice can create deployment" "$(og "$alice" -n dev-a create deployment e2e --image=busybox:1.36 --dry-run=server -o name 2>&1)" "deployment.apps/e2e"
 og "$alice" -n dev-a delete pod e2e --ignore-not-found >/dev/null
 og "$alice" -n dev-a run e2e --image=busybox:1.36 --restart=Never --command -- sh -c 'echo hello-log; sleep 3600' >/dev/null

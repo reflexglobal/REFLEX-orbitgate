@@ -13,6 +13,8 @@ replicas: 2  # Deployment only
 # next to the apiserver. Users then use the control-plane IPs; no NodePort needed.
 hostNetwork: false
 listenPort: 8443  # pick a free port on the nodes when hostNetwork is on
+# Plain-HTTP /metrics (Prometheus), /healthz, /readyz; used by the probes. Also a node port with hostNetwork.
+metricsPort: 9090
 
 daemonSet:
   # Matches kubeadm (control-plane: "") and RKE2/k3s (control-plane: "true").

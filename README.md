@@ -216,7 +216,9 @@ Push a tag `vX.Y.Z` and CI tests, then publishes:
 - the chart `oci://ghcr.io/reflexglobal/charts/orbitgate` version `X.Y.Z` (chart version = app version);
 - a GitHub release with the chart `.tgz`.
 
-Each release also signs the image and chart with cosign (keyless) and publishes ArtifactHub metadata.
+Each release also signs the image and chart with cosign (keyless) and publishes ArtifactHub metadata. The release notes list the image and chart digests.
+
+**Pinning.** Consume Orbitgate only from a release, never from `main`: tags are immutable and only tagged commits passed the full CI (unit, e2e, scans). Pin the chart version and the image by tag and digest, e.g. `image.tag: X.Y.Z@sha256:...` (the chart puts `image.tag` after the `:`). There is no `latest` tag on purpose. `Chart.yaml` on `main` keeps the last release's version; CI sets the real version from the tag.
 
 **Commits** follow [Conventional Commits](https://www.conventionalcommits.org) (`type(scope)!: subject`), and CI rejects anything else. The ArtifactHub changelog is generated from them at release time:
 

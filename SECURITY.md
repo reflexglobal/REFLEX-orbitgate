@@ -40,6 +40,8 @@ cosign verify ghcr.io/reflexglobal/orbitgate:<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+`0.0.1-alpha` was signed before the repository was renamed, so its identity starts with `https://github.com/reflexglobal/REFLEX-orbitgate/`; use a later release.
+
 The chart (`oci://ghcr.io/reflexglobal/charts/orbitgate`) is signed the same way. Each image also carries an SPDX SBOM and SLSA provenance (BuildKit attestations):
 
 ```sh

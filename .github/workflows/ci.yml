@@ -151,8 +151,16 @@ jobs:
             --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
             charts/orbitgate/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
       - name: GitHub release (chart tgz attached for airgapped transfer)
-        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           # Conventional-commit changelog (same as ArtifactHub's) on top of GitHub's PR-based notes
           notes=$(yq -r '.annotations["artifacthub.io/changes"] | from_yaml | .[] | "- **" + .kind + "**: " + .description' charts/orbitgate/Chart.yaml)
+          # Digests, so consumers (e.g. a platform release manifest) can pin exactly this build
+          notes="$notes
+
+          **Pin this release**
+          - image \`ghcr.io/reflexglobal/orbitgate:$VERSION@$IMAGE_DIGEST\`
+          - chart \`oci://ghcr.io/reflexglobal/charts/orbitgate\` version \`$VERSION\` (\`@$CHART_DIGEST\`)"
           gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes --notes "$notes" --prerelease="$PRERELEASE"

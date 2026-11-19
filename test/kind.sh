@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: MIT
 # Own kind cluster "orbitgate" (audit logging on) + Orbitgate via the Helm chart, then e2e through the proxy.
 # Users are ServiceAccount tokens: Orbitgate passes any credential the apiserver accepts (OIDC works the same).
-# Re-runnable. Teardown: kind delete cluster --name orbitgate --kubeconfig test/.kubeconfig
+# Re-runnable. Teardown: kind delete cluster --name ${KIND_CLUSTER:-orbitgate} --kubeconfig test/.kubeconfig
 set -euo pipefail
 cd "$(dirname "$0")/.."
-C=orbitgate
+C=${KIND_CLUSTER:-orbitgate}  # override to run next to other kind clusters
 export KUBECONFIG=$PWD/test/.kubeconfig  # own kubeconfig: never touches ~/.kube/config or its current context
 tmp=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$tmp"' EXIT
@@ -57,6 +57,7 @@ check "alice sees only dev-a" "$(nss "$alice")" "namespace/dev-a"
 check "bob sees only dev-b" "$(nss "$bob")" "namespace/dev-b"
 check "admin sees all (passthrough)" "$(og "$admin" get ns -o name | grep -c .)" "$(kubectl get ns -o name | grep -c .)"
 check "alice json list" "$(og "$alice" get ns -o jsonpath='{.items[*].metadata.name}')" "dev-a"
+check "alice ?limit=1: whole list, no continue token (it names a namespace)" "$(og "$alice" get --raw '/api/v1/namespaces?limit=1' | grep -o '"continue":"[^"]*"\|"name":"dev-a"' | tr '\n' ' ')" '"name":"dev-a" '
 og "$alice" get ns --watch-only -o name --request-timeout=10s >"$tmp/watch" 2>/dev/null & wpid=$!
 sleep 3
 kubectl create ns dev-c --dry-run=client -o yaml | kubectl apply -f - >/dev/null

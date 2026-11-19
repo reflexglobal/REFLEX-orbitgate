@@ -362,7 +362,12 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	if accept == "" || strings.Contains(accept, "protobuf") {
 		accept = "application/json" // we have to decode it to filter
 	}
-	req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	// No pagination when filtering: a continue token encodes the page's last namespace name
+	// (base64 JSON), so ?limit=1 would let a tenant walk every name. Lists are small; take them whole.
+	q := r.URL.Query()
+	q.Del("limit")
+	q.Del("continue")
+	req, _ = http.NewRequestWithContext(r.Context(), http.MethodGet, apiURL.JoinPath(r.URL.Path).String()+"?"+q.Encode(), nil)
 	req.Header.Set("Accept", accept)
 	if resp, err = ownDo(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -513,6 +518,7 @@ func filter(body map[string]any, allowed map[string]bool) {
 	body[k] = kept
 	if meta, ok := body["metadata"].(map[string]any); ok {
 		delete(meta, "remainingItemCount") // would leak the real namespace count
+		delete(meta, "continue")           // would leak a namespace name (see listNamespaces)
 	}
 }
 

@@ -75,14 +75,19 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 				io.WriteString(w, ev+"\n")
 			}
 		case r.URL.Path == "/api/v1/namespaces" && (tok == "sa" || tok == "admin"):
+			if r.URL.Query().Has("limit") { // real apiservers: continue token = base64 of the last name ("dev-b")
+				io.WriteString(w, `{"kind":"NamespaceList","metadata":{"continue":"ZGV2LWI="},"items":[{"metadata":{"name":"dev-b"}}]}`)
+				return
+			}
 			io.WriteString(w, `{"kind":"NamespaceList","metadata":{},"items":[{"metadata":{"name":"dev-a"}},{"metadata":{"name":"dev-b"}}]}`)
-		case r.URL.Path == "/api/v1/namespaces" && tok == "alice":
+		case r.URL.Path == "/api/v1/namespaces" && (tok == "alice" || tok == "bob"):
 			w.WriteHeader(http.StatusForbidden)
-		case strings.HasSuffix(r.URL.Path, "selfsubjectaccessreviews") && tok == "alice":
+		case strings.HasSuffix(r.URL.Path, "selfsubjectaccessreviews") && (tok == "alice" || tok == "bob"):
 			ssars.Add(1)
 			b, _ := io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"status":{"allowed":`+map[bool]string{true: "true", false: "false"}[strings.Contains(string(b), `"dev-a"`)]+`}}`)
+			ok := tok == "alice" && r.Header.Get("Impersonate-User") == "" && strings.Contains(string(b), `"dev-a"`)
+			io.WriteString(w, `{"status":{"allowed":`+map[bool]string{true: "true", false: "false"}[ok]+`}}`)
 		default:
 			w.WriteHeader(http.StatusUnauthorized)
 		}
@@ -93,11 +98,19 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	*saDir = t.TempDir()
 	os.WriteFile(*saDir+"/token", []byte("sa"), 0o600)
 
-	list := func(tok string) (int, []string) {
+	var lastBody string
+	list := func(tok string, hdr ...string) (int, []string) {
 		r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces", nil)
+		if len(hdr) == 3 { // path, header, value
+			r = httptest.NewRequest(http.MethodGet, hdr[0], nil)
+			if hdr[1] != "" {
+				r.Header.Set(hdr[1], hdr[2])
+			}
+		}
 		r.Header.Set("Authorization", "Bearer "+tok)
 		w := httptest.NewRecorder()
 		listNamespaces(w, r)
+		lastBody = w.Body.String()
 		var body map[string]any
 		json.Unmarshal(w.Body.Bytes(), &body)
 		return w.Code, names(body)
@@ -113,6 +126,17 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	}
 	if code, ns := list("alice"); code != 200 || len(ns) != 1 || ssars.Load() != 2 {
 		t.Fatalf("alice again: %d %v, SSARs %d (want cached)", code, ns, ssars.Load())
+	}
+	// Breaking the cache: another token, or alice impersonating someone, must not reuse alice's answers.
+	if _, ns := list("bob"); len(ns) != 0 {
+		t.Fatalf("bob got alice's cached SSARs: %v", ns)
+	}
+	if _, ns := list("alice", "/api/v1/namespaces", "Impersonate-User", "admin"); len(ns) != 0 {
+		t.Fatalf("alice impersonating got alice's cached SSARs: %v", ns)
+	}
+	// Pagination: a continue token names the page's last namespace; filtered lists are never paged.
+	if code, ns := list("alice", "/api/v1/namespaces?limit=1", "", ""); code != 200 || len(ns) != 1 || ns[0] != "dev-a" || strings.Contains(lastBody, "ZGV2LWI") {
+		t.Fatalf("alice ?limit=1: %d %v %s", code, ns, lastBody)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces?watch=true", nil)
 	r.Header.Set("Authorization", "Bearer alice")

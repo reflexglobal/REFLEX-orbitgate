@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -155,8 +156,8 @@ func TestListNamespacesPassthroughAndFallback(t *testing.T) {
 	if !isWatch(url.Values{"watch": {""}}) || isWatch(url.Values{"watch": {"FALSE"}}) || isWatch(nil) {
 		t.Fatal("isWatch must parse like the apiserver")
 	}
-	if code, _ := list("garbage"); code != 401 {
-		t.Fatalf("garbage: %d", code)
+	if code, _ := list("garbage"); code != 401 || !strings.Contains(lastBody, "Unauthorized: the apiserver rejected the token (not a JWT)") {
+		t.Fatalf("garbage: %d %s", code, lastBody)
 	}
 }
 
@@ -363,5 +364,56 @@ func TestClientCertCredential(t *testing.T) {
 	*ownKey = dir + "/missing.key"
 	if _, err := ownClient(client.Transport.(*http.Transport)); err == nil {
 		t.Fatal("unreadable client key accepted")
+	}
+}
+
+func jwt(claims string) string {
+	return "Bearer x." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".sig"
+}
+
+func TestTokenReason(t *testing.T) {
+	now := time.Unix(2000, 0)
+	*trustedIss = "https://sso.cluster1.internal/realms/airlock, https://fleet.internal/realms/fleet"
+	defer func() { *trustedIss = "" }()
+	for _, tc := range []struct{ auth, want string }{
+		{"", "no bearer token"},
+		{"Bearer opaque", "not a JWT"},
+		{"Bearer a.!!!.c", "unreadable JWT claims"},
+		{jwt(`{"iss":"https://sso.skylab.internal/realms/airlock","exp":3000}`),
+			"token issuer https://sso.skylab.internal/realms/airlock is not trusted; trusted: https://sso.cluster1.internal/realms/airlock, https://fleet.internal/realms/fleet"},
+		{jwt(`{"iss":"https://fleet.internal/realms/fleet","exp":1000}`), "token from issuer https://fleet.internal/realms/fleet expired at 1970-01-01T00:16:40Z"},
+		{jwt(`{"iss":"https://sso.cluster1.internal/realms/airlock","aud":"kube","exp":3000}`), "issuer https://sso.cluster1.internal/realms/airlock, audience kube (check"},
+		{jwt(`{"iss":"https://evil\n\u001b[31m"}`), "token issuer https://evil[31m is not trusted"},
+	} {
+		if got := tokenReason(tc.auth, now); !strings.Contains(got, tc.want) {
+			t.Errorf("%q: got %q, want %q", tc.auth, got, tc.want)
+		}
+	}
+	*trustedIss = ""
+	if got := tokenReason(jwt(`{"iss":"https://a"}`), now); strings.Contains(got, "not trusted") {
+		t.Errorf("no -trusted-issuers must not claim untrusted: %q", got)
+	}
+}
+
+// A 401 through the proxy carries the reason, as a Status kubectl can show, and never the token.
+func TestExplain401(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	tok := jwt(`{"iss":"https://wrong","exp":9999999999,"sub":"s3cr3t-sub"}`)
+	resp := &http.Response{StatusCode: 401, Header: http.Header{"Content-Encoding": {"gzip"}}, Body: io.NopCloser(strings.NewReader("Unauthorized")),
+		Request: &http.Request{Header: http.Header{"Authorization": {tok}}}}
+	*trustedIss = "https://right"
+	defer func() { *trustedIss = "" }()
+	explain401(resp)
+	var st struct{ Kind, Message, Reason string }
+	b, _ := io.ReadAll(resp.Body)
+	json.Unmarshal(b, &st)
+	if st.Kind != "Status" || st.Reason != "Unauthorized" || st.Message != "Unauthorized: token issuer https://wrong is not trusted; trusted: https://right" ||
+		resp.ContentLength != int64(len(b)) || resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("got %s %v", b, resp.Header)
+	}
+	if l := buf.String(); !strings.Contains(l, "https://wrong") || strings.Contains(l, tok[7:]) || strings.Contains(l, "s3cr3t") {
+		t.Fatalf("log: %q", l)
 	}
 }

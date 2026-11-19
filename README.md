@@ -81,6 +81,34 @@ With `-metrics-listen=:9090` (the chart sets it from `metricsPort`), Orbitgate s
 
 No namespace names, users or tokens appear in the metrics.
 
+## Why was I rejected? (401)
+
+The apiserver answers a bad token with a bare `Unauthorized` and puts the reason only in its own log. Orbitgate adds it: on a 401 it reads the token's claims (issuer, audience, expiry; unverified, never the token itself), logs the reason and returns it in the Status message. kubectl shows it:
+
+```
+error: You must be logged in to the server (Unauthorized: token issuer https://sso.skylab.internal/realms/airlock is not trusted; trusted: https://sso.cluster1.internal/realms/airlock)
+```
+
+The reasons, in this order:
+- `no bearer token`: e.g. a client certificate (see below);
+- `token issuer X is not trusted; trusted: ...`: only with `-trusted-issuers`;
+- `token from issuer X expired at T`;
+- otherwise the issuer and audience, so you can compare them with the apiserver's authentication config.
+
+This is diagnostics only. The apiserver already rejected the request; Orbitgate never accepts or rejects a token itself.
+
+Set `-trusted-issuers` to the same issuers as the apiserver's `--oidc-issuer-url` or `AuthenticationConfiguration` `jwt[].issuer.url` (chart: `extraArgs: [-trusted-issuers=https://sso.example/realms/a]`). If ServiceAccount tokens also come through Orbitgate, add the ServiceAccount issuer (`--service-account-issuer`, e.g. `https://kubernetes.default.svc.cluster.local`); otherwise a rejected ServiceAccount token is reported as "not trusted". Anyone who sends a bad token sees this list, so leave the flag off if your issuer URLs are secret; the expiry and issuer/audience reasons work without it.
+
+### Several issuers (e.g. a fleet manager realm)
+
+Trust lives in the apiserver, not in Orbitgate. To let a second realm in (say a fleet manager's realm next to the site's own), add a second `jwt` entry to the apiserver's `AuthenticationConfiguration` (Kubernetes 1.30+), then list both issuers in `-trusted-issuers`.
+
+The trade-off: every trusted issuer can mint identities for this cluster. If the fleet realm is compromised, every site that trusts it is too. Limit what it can do:
+- give each issuer its own username and group prefix (`claimMappings.username.prefix`, e.g. `fleet:`), so fleet users can never match a site's RoleBindings by accident;
+- require an audience per cluster (`audiences`), so a token for one site does not work on the next;
+- bind only the fleet groups you mean to (often read-only), and keep the fleet realm's admins few;
+- prefer one issuer per cluster when you don't need central access.
+
 ## Requirements
 
 **Cluster:** any Kubernetes with RBAC. Also needed:
@@ -95,7 +123,7 @@ No namespace names, users or tokens appear in the metrics.
 
 Orbitgate itself knows nothing about OIDC, so any provider the apiserver supports works (Keycloak, Dex, Okta, Entra, ...). **Client-certificate users can't go through a TLS-terminating proxy**; they keep using the apiserver directly, which is usually only break-glass admins.
 
-**Client certificates don't work through Orbitgate.** Orbitgate terminates TLS, so a client certificate never reaches the apiserver, and the request arrives without credentials. kubectl then reports `error: You must be logged in to the server (Unauthorized)` (or `Forbidden ... system:anonymous` if anonymous auth is on). Certificate users, usually break-glass admins such as the kubeadm `admin.conf`, keep a context that points straight at the apiserver:
+**Client certificates don't work through Orbitgate.** Orbitgate terminates TLS, so a client certificate never reaches the apiserver, and the request arrives without credentials. kubectl then reports `error: You must be logged in to the server (Unauthorized: no bearer token ...)` (or `Forbidden ... system:anonymous` if anonymous auth is on). Certificate users, usually break-glass admins such as the kubeadm `admin.conf`, keep a context that points straight at the apiserver:
 
 ```sh
 kubectl config set-context breakglass --cluster=<apiserver-cluster> --user=<cert-user>   # server: https://<apiserver>:6443
@@ -157,6 +185,7 @@ The chart sets the basics; the rest goes in `extraArgs`. You need them all direc
 | `-tenant-verb` / `-tenant-resource` / `-tenant-group` | `list` / `pods` / core | the tenant check, see above |
 | `-metrics-listen` | off | e.g. `:9090` for `/metrics`, `/healthz`, `/readyz` |
 | `-access-log` / `-access-log-json` | false | see [Audit logging](#audit-logging) |
+| `-trusted-issuers` | | comma-separated token issuers the apiserver trusts; only used to explain a 401, see [Why was I rejected?](#why-was-i-rejected-401) |
 | `-version` | | print the version and exit |
 
 Orbitgate's own identity (ServiceAccount or client cert) only ever needs `list` and `watch` on namespaces; see [docs/static-pod.md](docs/static-pod.md#what-the-identity-needs-rbac).

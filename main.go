@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -49,6 +50,7 @@ var (
 	metricsAddr = flag.String("metrics-listen", "", "plain-HTTP listener for /metrics, /healthz, /readyz (e.g. :9090; empty = off)")
 	accessLog   = flag.Bool("access-log", false, "log every request: client IP, method, path, status, duration (never credentials)")
 	accessJSON  = flag.Bool("access-log-json", false, "with -access-log: JSON lines that add the caller's user/groups (SelfSubjectReview, cached), verb, namespace, resource")
+	trustedIss  = flag.String("trusted-issuers", "", "comma-separated token issuers the apiserver trusts; only used to explain a 401 (the apiserver still decides)")
 )
 
 var version = "dev" // set at build time: -ldflags "-X main.version=X.Y.Z"
@@ -94,6 +96,7 @@ func main() {
 			pr.SetURL(apiURL)
 			pr.SetXForwarded() // apiserver audit logs the real client IP in sourceIPs
 		},
+		ModifyResponse: explain401,
 	}
 
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -352,6 +355,7 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.StatusCode != http.StatusForbidden {
 		inc(`orbitgate_namespace_requests_total{mode="passthrough"}`)
+		explain401(resp)
 		relay(w, resp)
 		return
 	}
@@ -397,6 +401,80 @@ func listNamespaces(w http.ResponseWriter, r *http.Request) {
 	filter(body, allowedNamespaces(r.Context(), r.Header, names(body)))
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	json.NewEncoder(w).Encode(body)
+}
+
+// explain401 replaces the apiserver's bare "Unauthorized" with the reason, read from the token's
+// unverified claims, and logs it. Diagnostic only: the apiserver already said no, Orbitgate decides nothing.
+// Never the token itself: only issuer, audience and expiry.
+func explain401(resp *http.Response) error {
+	if resp.StatusCode != http.StatusUnauthorized || resp.Request == nil {
+		return nil
+	}
+	why := tokenReason(resp.Request.Header.Get("Authorization"), time.Now())
+	log.Printf("apiserver rejected credentials: %s", why)
+	b, _ := json.Marshal(map[string]any{"kind": "Status", "apiVersion": "v1", "metadata": map[string]any{},
+		"status": "Failure", "message": "Unauthorized: " + why, "reason": "Unauthorized", "code": http.StatusUnauthorized})
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(b))
+	resp.ContentLength = int64(len(b))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Del("Content-Encoding")
+	return nil
+}
+
+// tokenReason guesses why the apiserver rejected auth: untrusted issuer (needs -trusted-issuers), expiry, or neither.
+func tokenReason(auth string, now time.Time) string {
+	tok, ok := strings.CutPrefix(auth, "Bearer ")
+	if !ok || tok == "" {
+		return "no bearer token (client certificates do not pass through Orbitgate)"
+	}
+	parts := strings.Split(tok, ".")
+	var c struct {
+		Iss string `json:"iss"`
+		Aud any    `json:"aud"`
+		Exp int64  `json:"exp"`
+	}
+	if len(parts) != 3 {
+		return "the apiserver rejected the token (not a JWT)"
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(parts[1]); err != nil || json.Unmarshal(b, &c) != nil {
+		return "the apiserver rejected the token (unreadable JWT claims)"
+	}
+	iss := clean(c.Iss)
+	if trusted := issuers(); len(trusted) > 0 && !slices.Contains(trusted, c.Iss) {
+		return fmt.Sprintf("token issuer %s is not trusted; trusted: %s", iss, strings.Join(trusted, ", "))
+	}
+	if c.Exp > 0 && now.Unix() >= c.Exp {
+		return fmt.Sprintf("token from issuer %s expired at %s", iss, time.Unix(c.Exp, 0).UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("the apiserver rejected the token from issuer %s, audience %s (check its issuer, audience and claim rules)", iss, clean(fmt.Sprint(c.Aud)))
+}
+
+func issuers() (out []string) {
+	for s := range strings.SplitSeq(*trustedIss, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return
+}
+
+// clean makes a caller-supplied claim safe for a log line: no control characters, at most 200 bytes.
+func clean(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 200 {
+		s = s[:200] + "..."
+	}
+	if s == "" {
+		s = "(none)"
+	}
+	return s
 }
 
 // relay copies resp to w minus hop-by-hop headers (RFC 9110 7.6.1), like httputil.ReverseProxy does.

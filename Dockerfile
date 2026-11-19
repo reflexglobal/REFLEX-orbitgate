@@ -1,5 +1,5 @@
 # Exact Go patch version: Dependabot bumps it (Go patch releases carry the security fixes).
-FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4 AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod *.go ./

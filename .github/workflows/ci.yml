@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: {go-version: 1.26.x, check-latest: true, cache: false}  # latest patch; no deps to cache
-      - run: go vet ./... && go test ./...
+      - run: go vet ./... && go test -race ./...
       - name: govulncheck (Go stdlib + modules)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - uses: azure/setup-helm@v5
@@ -116,6 +116,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/reflexglobal/orbitgate:${{ env.VERSION }}
           build-args: VERSION=${{ env.VERSION }}
+          sbom: true              # SPDX SBOM attestation per platform
+          provenance: mode=max    # SLSA provenance attestation
       - uses: azure/setup-helm@v5
       - uses: sigstore/cosign-installer@v3
       - uses: oras-project/setup-oras@v2
@@ -144,10 +146,13 @@ jobs:
           cosign sign --yes "ghcr.io/reflexglobal/charts/orbitgate@$CHART_DIGEST"
       - name: ArtifactHub repository metadata (Verified publisher)
         run: |
-          oras login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
           oras push ghcr.io/reflexglobal/charts/orbitgate:artifacthub.io \
             --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
             charts/orbitgate/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
       - name: GitHub release (chart tgz attached for airgapped transfer)
         env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
-        run: gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes --prerelease="$PRERELEASE"
+        run: |
+          # Conventional-commit changelog (same as ArtifactHub's) on top of GitHub's PR-based notes
+          notes=$(yq -r '.annotations["artifacthub.io/changes"] | from_yaml | .[] | "- **" + .kind + "**: " + .description' charts/orbitgate/Chart.yaml)
+          gh release create "$GITHUB_REF_NAME" "orbitgate-$VERSION.tgz" --generate-notes --notes "$notes" --prerelease="$PRERELEASE"

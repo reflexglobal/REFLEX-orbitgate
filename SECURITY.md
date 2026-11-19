@@ -39,3 +39,10 @@ cosign verify ghcr.io/reflexglobal/orbitgate:<version> \
   --certificate-identity-regexp '^https://github.com/reflexglobal/orbitgate/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The chart (`oci://ghcr.io/reflexglobal/charts/orbitgate`) is signed the same way. Each image also carries an SPDX SBOM and SLSA provenance (BuildKit attestations):
+
+```sh
+docker buildx imagetools inspect ghcr.io/reflexglobal/orbitgate:<version> --format '{{json .SBOM}}'
+docker buildx imagetools inspect ghcr.io/reflexglobal/orbitgate:<version> --format '{{json .Provenance}}'
+```
